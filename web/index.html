@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>价比比</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;background:#f6f7f9;color:#222}.app{max-width:980px;margin:0 auto;padding-bottom:32px}.hero{background:linear-gradient(135deg,#ff4d4f,#ff8a3d);color:#fff;padding:22px 16px 18px;position:sticky;top:0;z-index:3;box-shadow:0 8px 24px rgba(255,77,79,.2)}h1{margin:0 0 12px;font-size:26px}.search{display:flex;gap:8px}.search input{flex:1;border:0;border-radius:999px;padding:13px 16px;font-size:16px;outline:0}.search button,.buy{border:0;border-radius:999px;font-weight:800;cursor:pointer}.search button{padding:0 20px;background:#222;color:#fff}.bar{display:flex;gap:8px;overflow:auto;padding:12px 16px 0}.bar button{border:1px solid #eee;background:#fff;border-radius:999px;padding:8px 12px;white-space:nowrap}.bar button.active{background:#222;color:#fff}.status{padding:14px 16px;color:#777}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:0 16px}.card{background:#fff;border-radius:18px;overflow:hidden;box-shadow:0 6px 20px rgba(0,0,0,.06)}.pic{aspect-ratio:1/1;background:#eee}.pic img{width:100%;height:100%;object-fit:cover;display:block}.info{padding:10px}.title{font-size:14px;line-height:1.35;height:38px;overflow:hidden}.meta{display:flex;justify-content:space-between;gap:8px;color:#777;font-size:12px;margin-top:6px}.coupon{display:inline-block;margin-top:7px;color:#ff4d4f;border:1px solid rgba(255,77,79,.35);border-radius:6px;padding:2px 5px;font-size:12px}.price{margin-top:6px;color:#ff4d4f;font-size:22px;font-weight:900}.price small{font-size:12px}.old{font-size:12px;color:#999;text-decoration:line-through}.buy{width:100%;margin-top:10px;padding:11px;background:linear-gradient(135deg,#ff4d4f,#ff8a3d);color:#fff}.empty{text-align:center;color:#888;padding:50px 16px}.foot{text-align:center;color:#999;font-size:12px;padding:20px}.toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:#222;color:#fff;border-radius:999px;padding:10px 14px;display:none}@media(min-width:760px){.grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <section class="hero">
+      <h1>价比比</h1>
+      <form id="form" class="search"><input id="keyword" value="充电宝" placeholder="搜商品，比如：充电宝"><button>搜索</button></form>
+    </section>
+    <div class="bar"><button class="active">拼多多</button><button disabled>淘宝</button><button disabled>京东</button></div>
+    <div class="bar" id="sorts"><button class="active" data-sort="default">综合</button><button data-sort="price">券后价</button><button data-sort="sales">销量</button><button data-sort="coupon">优惠券</button></div>
+    <div id="status" class="status">准备好了。</div>
+    <main id="grid" class="grid"></main>
+    <div id="empty" class="empty" style="display:none">暂无商品</div>
+    <div class="foot">价格、优惠券和库存以拼多多页面为准。</div>
+  </div>
+  <div id="toast" class="toast"></div>
+  <script>
+    const API_BASE='https://jiabibi-api.onrender.com';
+    let goods=[], sort='default';
+    const $=id=>document.getElementById(id);
+    const yuan=n=>Number(n||0).toFixed(2).replace(/\.00$/,'');
+    const sales=s=>String(s||'').includes('万')?parseFloat(s)*10000:(parseInt(String(s||'').replace(/\D/g,''))||0);
+    function toast(msg){const t=$('toast');t.textContent=msg;t.style.display='block';setTimeout(()=>t.style.display='none',1600)}
+    function sorted(){const a=[...goods]; if(sort==='price')a.sort((x,y)=>(x.coupon_price||0)-(y.coupon_price||0)); if(sort==='sales')a.sort((x,y)=>sales(y.sales_tip)-sales(x.sales_tip)); if(sort==='coupon')a.sort((x,y)=>(y.coupon_discount||0)-(x.coupon_discount||0)); return a}
+    function render(){const grid=$('grid');grid.innerHTML='';const list=sorted();$('empty').style.display=list.length?'none':'block';$('status').textContent=list.length?`共 ${list.length} 个商品，点击去购买会生成推广链接。`:'暂无商品';list.forEach(item=>{const c=document.createElement('article');c.className='card';c.innerHTML=`<div class="pic"><img src="${item.goods_thumbnail_url||item.goods_image_url||''}" loading="lazy"></div><div class="info"><div class="title">${item.goods_name||''}</div><div class="meta"><span>${item.brand_name||'拼多多'}</span><span>销量 ${item.sales_tip||'-'}</span></div><div class="coupon">券 ¥${yuan(item.coupon_discount_yuan)}</div><div class="price"><small>¥</small>${yuan(item.coupon_price_yuan)}</div><div class="old">¥${yuan(item.min_group_price_yuan)}</div><button class="buy">去购买</button></div>`;c.querySelector('.buy').onclick=()=>buy(item.goods_sign);grid.appendChild(c)})}
+    async function search(){const q=$('keyword').value.trim()||'充电宝';$('status').textContent='搜索中...';$('grid').innerHTML='';try{const r=await fetch(`${API_BASE}/api/pdd/search?keyword=${encodeURIComponent(q)}`);const d=await r.json();if(!r.ok||d.error_response)throw new Error(d.error_response?.sub_msg||d.message||'搜索失败');goods=d.goods_list||[];render()}catch(e){$('status').textContent='搜索失败：'+e.message;toast('搜索失败')}}
+    async function buy(sign){try{toast('正在生成购买链接...');const r=await fetch(`${API_BASE}/api/pdd/link`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({goods_sign:sign})});const d=await r.json();if(!r.ok||d.error_response)throw new Error(d.error_response?.sub_msg||d.message||'生成失败');const link=d.mobile_short_url||d.short_url||d.mobile_url||d.url||d.schema_url;if(link) location.href=link; else toast('没有返回链接')}catch(e){toast('生成失败：'+e.message)}}
+    $('form').onsubmit=e=>{e.preventDefault();search()};document.querySelectorAll('#sorts button').forEach(b=>b.onclick=()=>{sort=b.dataset.sort;document.querySelectorAll('#sorts button').forEach(x=>x.classList.toggle('active',x===b));render()});search();
+  </script>
+</body>
+</html>
