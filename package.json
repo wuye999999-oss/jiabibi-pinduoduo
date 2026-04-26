@@ -1,0 +1,13 @@
+{
+  "name": "jiabibi-api",
+  "version": "1.0.0",
+  "description": "Jiabibi PDD API backend",
+  "main": "加比比/api/server.js",
+  "scripts": {
+    "start": "node 加比比/api/server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {}
+}
