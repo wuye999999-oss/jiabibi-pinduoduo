@@ -28,15 +28,21 @@ const CLIENT_SECRET = process.env.PDD_CLIENT_SECRET;
 const PDD_PID = process.env.PDD_PID;
 const CUSTOM_PARAMETERS = process.env.PDD_CUSTOM_PARAMETERS || '';
 
+function cleanParams(params) {
+  const cleaned = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === '') continue;
+    cleaned[key] = String(value);
+  }
+  return cleaned;
+}
+
 function md5Upper(input) {
   return crypto.createHash('md5').update(input, 'utf8').digest('hex').toUpperCase();
 }
 
 function makeSign(params, secret) {
-  const keys = Object.keys(params)
-    .filter((key) => params[key] !== undefined && params[key] !== null && params[key] !== '')
-    .sort();
-
+  const keys = Object.keys(params).sort();
   let raw = secret;
   for (const key of keys) raw += key + params[key];
   raw += secret;
@@ -84,14 +90,14 @@ async function pddRequest(type, bizParams = {}) {
     };
   }
 
-  const params = {
+  const params = cleanParams({
     type,
     client_id: CLIENT_ID,
     timestamp: Math.floor(Date.now() / 1000).toString(),
     data_type: 'JSON',
     ...bizParams,
-  };
-  params.sign = makeSign(params, CLIENT_SECRET);
+  });
+  params.sign = makeSign(params, CLIENT_SECRET.trim());
   return postForm(PDD_API_URL, params);
 }
 
