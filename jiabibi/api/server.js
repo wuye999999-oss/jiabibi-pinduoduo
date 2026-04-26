@@ -6,13 +6,10 @@ const path = require('path');
 const { URL } = require('url');
 
 const envPath = path.join(__dirname, '.env');
-if (!fs.existsSync(envPath)) {
-  fs.copyFileSync(path.join(__dirname, '.env.example'), envPath);
-  console.log('Created .env. Please fill it, save, then run again.');
-  process.exit(0);
-}
 
 function loadEnv(file) {
+  if (!fs.existsSync(file)) return;
+
   const text = fs.readFileSync(file, 'utf8');
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -24,8 +21,8 @@ function loadEnv(file) {
     process.env[key] = value;
   }
 }
-loadEnv(envPath);
 
+loadEnv(envPath);
 const CLIENT_ID = process.env.PDD_CLIENT_ID;
 const CLIENT_SECRET = process.env.PDD_CLIENT_SECRET;
 const PID = process.env.PDD_PID;
