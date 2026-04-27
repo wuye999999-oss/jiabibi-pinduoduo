@@ -21,6 +21,14 @@ function loadLocalEnv() {
 }
 loadLocalEnv();
 
+function envFirst(...names) {
+  for (const name of names) {
+    const value = process.env[name];
+    if (value !== undefined && value !== null && String(value).trim() !== '') return String(value).trim();
+  }
+  return '';
+}
+
 const PORT = process.env.PORT || 3000;
 
 // Pinduoduo config
@@ -31,14 +39,14 @@ const PDD_PID = process.env.PDD_PID;
 const CUSTOM_PARAMETERS = process.env.PDD_CUSTOM_PARAMETERS || '';
 
 // JD Union config
-const JD_API_URL = process.env.JD_API_URL || 'https://api.jd.com/routerjson';
-const JD_APP_KEY = process.env.JD_APP_KEY;
-const JD_APP_SECRET = process.env.JD_APP_SECRET;
-const JD_ACCESS_TOKEN = process.env.JD_ACCESS_TOKEN || '';
-const JD_POSITION_ID = process.env.JD_POSITION_ID || '3104496027';
-const JD_PID = process.env.JD_PID || '2038054117_4104082584_3104496027';
-const JD_SITE_ID = process.env.JD_SITE_ID || (JD_PID.split('_')[1] || '');
-const JD_PROMOTION_METHOD = process.env.JD_PROMOTION_METHOD || 'jd.union.open.promotion.common.get';
+const JD_API_URL = envFirst('JD_API_URL') || 'https://api.jd.com/routerjson';
+const JD_APP_KEY = envFirst('JD_APP_KEY', 'JD_APPKEY', 'JD_APP_KEY_ID', 'JD_KEY', 'APP_KEY');
+const JD_APP_SECRET = envFirst('JD_APP_SECRET', 'JD_APPSECRET', 'JD_SECRET', 'JD_SECRET_KEY', 'SECRET_KEY', 'APP_SECRET');
+const JD_ACCESS_TOKEN = envFirst('JD_ACCESS_TOKEN', 'JD_TOKEN', 'ACCESS_TOKEN');
+const JD_POSITION_ID = envFirst('JD_POSITION_ID', 'JD_POSITIONID', 'JD_POS_ID') || '3104496027';
+const JD_PID = envFirst('JD_PID') || '2038054117_4104082584_3104496027';
+const JD_SITE_ID = envFirst('JD_SITE_ID', 'JD_SITEID') || (JD_PID.split('_')[1] || '');
+const JD_PROMOTION_METHOD = envFirst('JD_PROMOTION_METHOD') || 'jd.union.open.promotion.common.get';
 
 function cleanParams(params) {
   const cleaned = {};
@@ -125,7 +133,7 @@ async function jdRequest(method, bizObject = {}) {
   if (!JD_APP_KEY || !JD_APP_SECRET) {
     return {
       error: 'missing_jd_env',
-      message: 'Missing JD_APP_KEY or JD_APP_SECRET in Render Environment Variables.',
+      message: 'Missing JD_APP_KEY/JD_APPKEY or JD_APP_SECRET/JD_SECRET in Render Environment Variables.',
     };
   }
 
@@ -139,7 +147,7 @@ async function jdRequest(method, bizObject = {}) {
     sign_method: 'md5',
     '360buy_param_json': JSON.stringify(bizObject),
   });
-  params.sign = makeSign(params, JD_APP_SECRET.trim());
+  params.sign = makeSign(params, JD_APP_SECRET);
   return postForm(JD_API_URL, params);
 }
 
@@ -284,6 +292,8 @@ const server = http.createServer(async (req, res) => {
           has_jd_app_key: Boolean(JD_APP_KEY),
           has_jd_app_secret: Boolean(JD_APP_SECRET),
           has_jd_position_id: Boolean(JD_POSITION_ID),
+          jd_api_url: JD_API_URL,
+          jd_env_hint: 'Accepted names: JD_APP_KEY or JD_APPKEY; JD_APP_SECRET or JD_SECRET/JD_SECRET_KEY.',
         },
       });
     }
