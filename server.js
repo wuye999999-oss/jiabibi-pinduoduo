@@ -22,11 +22,23 @@ function loadLocalEnv() {
 loadLocalEnv();
 
 const PORT = process.env.PORT || 3000;
+
+// Pinduoduo config
 const PDD_API_URL = process.env.PDD_API_URL || 'https://gw-api.pinduoduo.com/api/router';
 const CLIENT_ID = process.env.PDD_CLIENT_ID;
 const CLIENT_SECRET = process.env.PDD_CLIENT_SECRET;
 const PDD_PID = process.env.PDD_PID;
 const CUSTOM_PARAMETERS = process.env.PDD_CUSTOM_PARAMETERS || '';
+
+// JD Union config
+const JD_API_URL = process.env.JD_API_URL || 'https://api.jd.com/routerjson';
+const JD_APP_KEY = process.env.JD_APP_KEY;
+const JD_APP_SECRET = process.env.JD_APP_SECRET;
+const JD_ACCESS_TOKEN = process.env.JD_ACCESS_TOKEN || '';
+const JD_POSITION_ID = process.env.JD_POSITION_ID || '3104496027';
+const JD_PID = process.env.JD_PID || '2038054117_4104082584_3104496027';
+const JD_SITE_ID = process.env.JD_SITE_ID || (JD_PID.split('_')[1] || '');
+const JD_PROMOTION_METHOD = process.env.JD_PROMOTION_METHOD || 'jd.union.open.promotion.common.get';
 
 function cleanParams(params) {
   const cleaned = {};
@@ -47,6 +59,14 @@ function makeSign(params, secret) {
   for (const key of keys) raw += key + params[key];
   raw += secret;
   return md5Upper(raw);
+}
+
+function jdTimestamp() {
+  const now = new Date();
+  const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+  const beijing = new Date(utc + 8 * 3600000);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${beijing.getFullYear()}-${pad(beijing.getMonth() + 1)}-${pad(beijing.getDate())} ${pad(beijing.getHours())}:${pad(beijing.getMinutes())}:${pad(beijing.getSeconds())}`;
 }
 
 function postForm(url, params) {
@@ -71,7 +91,7 @@ function postForm(url, params) {
         try {
           resolve(JSON.parse(data));
         } catch (err) {
-          reject(new Error('PDD returned non-JSON: ' + data.slice(0, 300)));
+          reject(new Error('API returned non-JSON: ' + data.slice(0, 300)));
         }
       });
     });
@@ -101,6 +121,28 @@ async function pddRequest(type, bizParams = {}) {
   return postForm(PDD_API_URL, params);
 }
 
+async function jdRequest(method, bizObject = {}) {
+  if (!JD_APP_KEY || !JD_APP_SECRET) {
+    return {
+      error: 'missing_jd_env',
+      message: 'Missing JD_APP_KEY or JD_APP_SECRET in Render Environment Variables.',
+    };
+  }
+
+  const params = cleanParams({
+    method,
+    app_key: JD_APP_KEY,
+    access_token: JD_ACCESS_TOKEN,
+    timestamp: jdTimestamp(),
+    format: 'json',
+    v: '1.0',
+    sign_method: 'md5',
+    '360buy_param_json': JSON.stringify(bizObject),
+  });
+  params.sign = makeSign(params, JD_APP_SECRET.trim());
+  return postForm(JD_API_URL, params);
+}
+
 function fenToYuan(value) {
   const n = Number(value || 0);
   return Math.round(n) / 100;
@@ -111,6 +153,7 @@ function normalizeGoods(item) {
   const couponDiscount = Number(item.coupon_discount || item.extra_coupon_amount || 0);
   const couponPrice = Math.max(0, minGroupPrice - couponDiscount);
   return {
+    platform: 'pdd',
     goods_name: item.goods_name,
     goods_desc: item.goods_desc,
     brand_name: item.brand_name || '',
@@ -130,6 +173,79 @@ function normalizeGoods(item) {
     promotion_rate: item.promotion_rate || 0,
     raw: item,
   };
+}
+
+function pickJdImage(item) {
+  const img = item.imageInfo?.imageList?.[0]?.url || item.imageInfo?.whiteImage || item.imgUrl || item.imageUrl || '';
+  if (!img) return '';
+  return img.startsWith('http') ? img : `https:${img}`;
+}
+
+function pickBestJdCoupon(item) {
+  const list = item.couponInfo?.couponList || item.couponList || [];
+  if (!Array.isArray(list) || !list.length) return null;
+  return list.find((c) => Number(c.isBest) === 1) || list[0];
+}
+
+function normalizeJdGoods(item) {
+  const priceInfo = item.priceInfo || {};
+  const coupon = pickBestJdCoupon(item);
+  const price = Number(priceInfo.lowestPrice || priceInfo.price || priceInfo.jdPrice || 0);
+  const finalPrice = Number(priceInfo.lowestCouponPrice || priceInfo.finalPrice || price || 0);
+  const couponDiscount = Math.max(0, price - finalPrice);
+  const skuId = item.skuId || item.sku_id || item.skuID || '';
+  const materialUrl = item.materialUrl || item.link || item.itemUrl || item.url || (skuId ? `https://item.jd.com/${skuId}.html` : '');
+
+  return {
+    platform: 'jd',
+    goods_name: item.skuName || item.goodsName || item.title || '',
+    goods_desc: item.skuName || item.goodsName || item.title || '',
+    brand_name: item.brandName || item.shopInfo?.shopName || '京东',
+    shop_name: item.shopInfo?.shopName || '',
+    goods_image_url: pickJdImage(item),
+    goods_thumbnail_url: pickJdImage(item),
+    sku_id: skuId,
+    goods_id: skuId,
+    material_url: materialUrl,
+    coupon_url: coupon?.link || coupon?.couponUrl || '',
+    sales_tip: item.inOrderCount30Days ? String(item.inOrderCount30Days) : (item.comments || ''),
+    min_group_price_yuan: price,
+    coupon_discount_yuan: couponDiscount,
+    coupon_price_yuan: finalPrice,
+    has_coupon: Boolean(coupon),
+    unified_tags: [coupon ? '有优惠券' : '', item.owner === 'g' ? '京东自营' : '', item.shopInfo?.shopName || ''].filter(Boolean),
+    promotion_rate: item.commissionInfo?.commissionShare || 0,
+    raw: item,
+  };
+}
+
+function findArrayDeep(value, keys = []) {
+  if (!value || typeof value !== 'object') return [];
+  for (const key of keys) {
+    if (Array.isArray(value[key])) return value[key];
+  }
+  for (const child of Object.values(value)) {
+    if (Array.isArray(child)) return child;
+    if (child && typeof child === 'object') {
+      const found = findArrayDeep(child, keys);
+      if (found.length) return found;
+    }
+  }
+  return [];
+}
+
+function findNumberDeep(value, keys = []) {
+  if (!value || typeof value !== 'object') return 0;
+  for (const key of keys) {
+    if (value[key] !== undefined && !Number.isNaN(Number(value[key]))) return Number(value[key]);
+  }
+  for (const child of Object.values(value)) {
+    if (child && typeof child === 'object') {
+      const found = findNumberDeep(child, keys);
+      if (found) return found;
+    }
+  }
+  return 0;
 }
 
 function sendJson(res, status, data) {
@@ -165,6 +281,9 @@ const server = http.createServer(async (req, res) => {
           has_client_id: Boolean(CLIENT_ID),
           has_client_secret: Boolean(CLIENT_SECRET),
           has_pid: Boolean(PDD_PID),
+          has_jd_app_key: Boolean(JD_APP_KEY),
+          has_jd_app_secret: Boolean(JD_APP_SECRET),
+          has_jd_position_id: Boolean(JD_POSITION_ID),
         },
       });
     }
@@ -191,6 +310,7 @@ const server = http.createServer(async (req, res) => {
       const list = (response.goods_list || []).map(normalizeGoods);
       return sendJson(res, 200, {
         ok: true,
+        platform: 'pdd',
         keyword,
         total_count: response.total_count || list.length,
         search_id: response.search_id || response.list_id || '',
@@ -220,12 +340,69 @@ const server = http.createServer(async (req, res) => {
       const item = result.goods_promotion_url_generate_response?.goods_promotion_url_list?.[0] || {};
       return sendJson(res, 200, {
         ok: true,
+        platform: 'pdd',
         mobile_short_url: item.mobile_short_url,
         short_url: item.short_url,
         mobile_url: item.mobile_url,
         url: item.url,
         schema_url: item.schema_url,
         we_app_info: item.we_app_info,
+        raw: result,
+      });
+    }
+
+    if (url.pathname === '/api/jd/search' && req.method === 'GET') {
+      const keyword = url.searchParams.get('keyword') || '充电宝';
+      const page = Number(url.searchParams.get('page') || '1');
+      const pageSize = Number(url.searchParams.get('page_size') || '20');
+      const result = await jdRequest('jd.union.open.goods.query', {
+        goodsReqDTO: {
+          keyword,
+          pageIndex: page,
+          pageSize: Math.min(pageSize, 30),
+          hasBestCoupon: 1,
+          pid: JD_PID,
+        },
+      });
+
+      if (result.error_response || result.error || result.code) return sendJson(res, 400, result);
+      const rawList = findArrayDeep(result, ['data', 'goodsList', 'result', 'list']);
+      const list = rawList.map(normalizeJdGoods);
+      const totalCount = findNumberDeep(result, ['totalCount', 'total_count', 'total']) || list.length;
+      return sendJson(res, 200, {
+        ok: true,
+        platform: 'jd',
+        keyword,
+        total_count: totalCount,
+        goods_list: list,
+        raw: result,
+      });
+    }
+
+    if (url.pathname === '/api/jd/link' && req.method === 'POST') {
+      const rawBody = await readBody(req);
+      let body = {};
+      try { body = rawBody ? JSON.parse(rawBody) : {}; } catch (_) { body = {}; }
+      const skuId = body.sku_id || body.skuId || url.searchParams.get('sku_id');
+      const materialId = body.material_url || body.materialId || body.url || (skuId ? `https://item.jd.com/${skuId}.html` : '');
+      const couponUrl = body.coupon_url || body.couponUrl || '';
+      if (!materialId) return sendJson(res, 400, { error: 'missing_material_id', message: 'material_url or sku_id is required' });
+
+      const promotionCodeReq = cleanParams({
+        materialId,
+        couponUrl,
+        siteId: JD_SITE_ID,
+        positionId: JD_POSITION_ID,
+      });
+      const result = await jdRequest(JD_PROMOTION_METHOD, { promotionCodeReq });
+
+      if (result.error_response || result.error || result.code) return sendJson(res, 400, result);
+      const clickURL = result.jd_union_open_promotion_common_get_response?.result?.clickURL || result.result?.clickURL || findArrayDeep(result, ['data'])?.[0]?.clickURL || '';
+      return sendJson(res, 200, {
+        ok: true,
+        platform: 'jd',
+        click_url: clickURL,
+        url: clickURL,
         raw: result,
       });
     }
