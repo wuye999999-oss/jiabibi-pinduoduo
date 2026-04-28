@@ -112,10 +112,7 @@ function postForm(url, params) {
 
 async function pddRequest(type, bizParams = {}) {
   if (!CLIENT_ID || !CLIENT_SECRET || !PDD_PID) {
-    return {
-      error: 'missing_env',
-      message: 'Missing PDD_CLIENT_ID, PDD_CLIENT_SECRET, or PDD_PID in Render Environment Variables.',
-    };
+    return { error: 'missing_env', message: 'Missing PDD_CLIENT_ID, PDD_CLIENT_SECRET, or PDD_PID in Render Environment Variables.' };
   }
 
   const params = cleanParams({
@@ -131,10 +128,7 @@ async function pddRequest(type, bizParams = {}) {
 
 async function jdRequest(method, bizObject = {}) {
   if (!JD_APP_KEY || !JD_APP_SECRET) {
-    return {
-      error: 'missing_jd_env',
-      message: 'Missing JD_APP_KEY/JD_APPKEY or JD_APP_SECRET/JD_SECRET in Render Environment Variables.',
-    };
+    return { error: 'missing_jd_env', message: 'Missing JD_APP_KEY/JD_APPKEY or JD_APP_SECRET/JD_SECRET in Render Environment Variables.' };
   }
 
   const params = cleanParams({
@@ -183,15 +177,24 @@ function normalizeGoods(item) {
   };
 }
 
+function asArray(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  return [value];
+}
+
 function pickJdImage(item) {
-  const img = item.imageInfo?.imageList?.[0]?.url || item.imageInfo?.whiteImage || item.imgUrl || item.imageUrl || '';
+  const imageList = item.imageInfo?.imageList?.urlInfo || item.imageInfo?.imageList || [];
+  const firstImage = Array.isArray(imageList) ? imageList[0] : imageList;
+  const img = firstImage?.url || item.imageInfo?.whiteImage || item.imgUrl || item.imageUrl || '';
   if (!img) return '';
-  return img.startsWith('http') ? img : `https:${img}`;
+  return img.startsWith('http') ? img : `https://${img.replace(/^\/\//, '')}`;
 }
 
 function pickBestJdCoupon(item) {
-  const list = item.couponInfo?.couponList || item.couponList || [];
-  if (!Array.isArray(list) || !list.length) return null;
+  const raw = item.couponInfo?.couponList?.coupon || item.couponInfo?.couponList || item.couponList || [];
+  const list = asArray(raw);
+  if (!list.length) return null;
   return list.find((c) => Number(c.isBest) === 1) || list[0];
 }
 
@@ -214,7 +217,7 @@ function normalizeJdGoods(item) {
     goods_thumbnail_url: pickJdImage(item),
     sku_id: skuId,
     goods_id: skuId,
-    material_url: materialUrl,
+    material_url: materialUrl.startsWith('http') ? materialUrl : `https://${materialUrl.replace(/^\/\//, '')}`,
     coupon_url: coupon?.link || coupon?.couponUrl || '',
     sales_tip: item.inOrderCount30Days ? String(item.inOrderCount30Days) : (item.comments || ''),
     min_group_price_yuan: price,
@@ -227,11 +230,25 @@ function normalizeJdGoods(item) {
   };
 }
 
+function parseJdQueryResult(result) {
+  const wrapper = result.jd_union_open_goods_query_responce || result.jd_union_open_goods_query_response || result;
+  let queryResult = wrapper.queryResult || wrapper.result || wrapper;
+  if (typeof queryResult === 'string') {
+    try { queryResult = JSON.parse(queryResult); } catch (_) {}
+  }
+  return queryResult;
+}
+
+function extractJdGoodsList(queryResult) {
+  const data = queryResult?.data;
+  if (!data) return [];
+  const goodsResp = data.goodsResp || data;
+  return asArray(goodsResp);
+}
+
 function findArrayDeep(value, keys = []) {
   if (!value || typeof value !== 'object') return [];
-  for (const key of keys) {
-    if (Array.isArray(value[key])) return value[key];
-  }
+  for (const key of keys) if (Array.isArray(value[key])) return value[key];
   for (const child of Object.values(value)) {
     if (Array.isArray(child)) return child;
     if (child && typeof child === 'object') {
@@ -244,9 +261,7 @@ function findArrayDeep(value, keys = []) {
 
 function findNumberDeep(value, keys = []) {
   if (!value || typeof value !== 'object') return 0;
-  for (const key of keys) {
-    if (value[key] !== undefined && !Number.isNaN(Number(value[key]))) return Number(value[key]);
-  }
+  for (const key of keys) if (value[key] !== undefined && !Number.isNaN(Number(value[key]))) return Number(value[key]);
   for (const child of Object.values(value)) {
     if (child && typeof child === 'object') {
       const found = findNumberDeep(child, keys);
@@ -318,14 +333,7 @@ const server = http.createServer(async (req, res) => {
 
       const response = result.goods_search_response || {};
       const list = (response.goods_list || []).map(normalizeGoods);
-      return sendJson(res, 200, {
-        ok: true,
-        platform: 'pdd',
-        keyword,
-        total_count: response.total_count || list.length,
-        search_id: response.search_id || response.list_id || '',
-        goods_list: list,
-      });
+      return sendJson(res, 200, { ok: true, platform: 'pdd', keyword, total_count: response.total_count || list.length, search_id: response.search_id || response.list_id || '', goods_list: list });
     }
 
     if (url.pathname === '/api/pdd/link' && req.method === 'POST') {
@@ -348,17 +356,7 @@ const server = http.createServer(async (req, res) => {
       if (result.error_response || result.error) return sendJson(res, 400, result);
 
       const item = result.goods_promotion_url_generate_response?.goods_promotion_url_list?.[0] || {};
-      return sendJson(res, 200, {
-        ok: true,
-        platform: 'pdd',
-        mobile_short_url: item.mobile_short_url,
-        short_url: item.short_url,
-        mobile_url: item.mobile_url,
-        url: item.url,
-        schema_url: item.schema_url,
-        we_app_info: item.we_app_info,
-        raw: result,
-      });
+      return sendJson(res, 200, { ok: true, platform: 'pdd', mobile_short_url: item.mobile_short_url, short_url: item.short_url, mobile_url: item.mobile_url, url: item.url, schema_url: item.schema_url, we_app_info: item.we_app_info, raw: result });
     }
 
     if (url.pathname === '/api/jd/search' && req.method === 'GET') {
@@ -370,23 +368,20 @@ const server = http.createServer(async (req, res) => {
           keyword,
           pageIndex: page,
           pageSize: Math.min(pageSize, 30),
+          sceneId: 1,
+          isCoupon: 1,
           hasBestCoupon: 1,
           pid: JD_PID,
         },
       });
 
       if (result.error_response || result.error || result.code) return sendJson(res, 400, result);
-      const rawList = findArrayDeep(result, ['data', 'goodsList', 'result', 'list']);
+      const queryResult = parseJdQueryResult(result);
+      if (queryResult?.code && String(queryResult.code) !== '200') return sendJson(res, 400, { ok: false, platform: 'jd', keyword, jd_error: queryResult, raw: result });
+      const rawList = extractJdGoodsList(queryResult);
       const list = rawList.map(normalizeJdGoods);
-      const totalCount = findNumberDeep(result, ['totalCount', 'total_count', 'total']) || list.length;
-      return sendJson(res, 200, {
-        ok: true,
-        platform: 'jd',
-        keyword,
-        total_count: totalCount,
-        goods_list: list,
-        raw: result,
-      });
+      const totalCount = Number(queryResult?.totalCount || list.length);
+      return sendJson(res, 200, { ok: true, platform: 'jd', keyword, total_count: totalCount, goods_list: list, raw: result });
     }
 
     if (url.pathname === '/api/jd/link' && req.method === 'POST') {
@@ -398,23 +393,12 @@ const server = http.createServer(async (req, res) => {
       const couponUrl = body.coupon_url || body.couponUrl || '';
       if (!materialId) return sendJson(res, 400, { error: 'missing_material_id', message: 'material_url or sku_id is required' });
 
-      const promotionCodeReq = cleanParams({
-        materialId,
-        couponUrl,
-        siteId: JD_SITE_ID,
-        positionId: JD_POSITION_ID,
-      });
+      const promotionCodeReq = cleanParams({ materialId, couponUrl, siteId: JD_SITE_ID, positionId: JD_POSITION_ID });
       const result = await jdRequest(JD_PROMOTION_METHOD, { promotionCodeReq });
 
       if (result.error_response || result.error || result.code) return sendJson(res, 400, result);
       const clickURL = result.jd_union_open_promotion_common_get_response?.result?.clickURL || result.result?.clickURL || findArrayDeep(result, ['data'])?.[0]?.clickURL || '';
-      return sendJson(res, 200, {
-        ok: true,
-        platform: 'jd',
-        click_url: clickURL,
-        url: clickURL,
-        raw: result,
-      });
+      return sendJson(res, 200, { ok: true, platform: 'jd', click_url: clickURL, url: clickURL, raw: result });
     }
 
     return sendJson(res, 404, { error: 'not_found', path: url.pathname });
