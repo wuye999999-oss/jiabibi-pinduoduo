@@ -99,14 +99,15 @@ function pickJdCoupon(item) {
 function normalizeJd(item, source = 'real') {
   const priceInfo = item.priceInfo || {};
   const coupon = pickJdCoupon(item);
-  const price = Number(priceInfo.lowestPrice || priceInfo.price || priceInfo.jdPrice || 0);
+  const price = Number(priceInfo.lowestPrice || priceInfo.price || priceInfo.jdPrice || item.unitPrice || item.wlUnitPrice || item.jdPrice || 0);
   const finalPrice = Number(priceInfo.lowestCouponPrice || priceInfo.finalPrice || price || 0);
-  const skuId = item.skuId || item.sku_id || item.skuID || '';
+  const skuId = item.skuId || item.sku_id || item.skuID || item.skuIdStr || '';
   const materialUrl = item.materialUrl || item.link || item.itemUrl || item.url || (skuId ? `https://item.jd.com/${skuId}.html` : '');
-  return { platform: 'jd', source, goods_name: item.skuName || item.goodsName || item.title || '', goods_desc: item.skuName || item.goodsName || item.title || '', brand_name: item.brandName || item.shopInfo?.shopName || '京东', shop_name: item.shopInfo?.shopName || '', goods_image_url: pickJdImage(item), goods_thumbnail_url: pickJdImage(item), sku_id: skuId, goods_id: skuId, material_url: httpsUrl(materialUrl), coupon_url: coupon?.link || coupon?.couponUrl || '', sales_tip: item.inOrderCount30Days ? String(item.inOrderCount30Days) : (item.comments || ''), min_group_price_yuan: price, coupon_discount_yuan: Math.max(0, price - finalPrice), coupon_price_yuan: finalPrice, has_coupon: Boolean(coupon), unified_tags: [source.includes('fallback') ? '京粉精选' : '', coupon ? '有优惠券' : '', item.owner === 'g' ? '京东自营' : '', item.shopInfo?.shopName || ''].filter(Boolean), raw: item };
+  const image = pickJdImage(item) || httpsUrl(item.imageUrl || item.imgUrl || '');
+  return { platform: 'jd', source, goods_name: item.skuName || item.goodsName || item.title || item.goods_name || '', goods_desc: item.skuName || item.goodsName || item.title || '', brand_name: item.brandName || item.shopInfo?.shopName || '京东', shop_name: item.shopInfo?.shopName || item.shopName || '', goods_image_url: image, goods_thumbnail_url: image, sku_id: skuId, goods_id: skuId, material_url: httpsUrl(materialUrl), coupon_url: coupon?.link || coupon?.couponUrl || '', sales_tip: item.inOrderCount30Days ? String(item.inOrderCount30Days) : (item.comments || ''), min_group_price_yuan: price, coupon_discount_yuan: Math.max(0, price - finalPrice), coupon_price_yuan: finalPrice, has_coupon: Boolean(coupon), unified_tags: [source.includes('fallback') ? '京粉精选' : '', source.includes('url') ? '链接直查' : '', coupon ? '有优惠券' : '', item.owner === 'g' ? '京东自营' : '', item.shopInfo?.shopName || item.shopName || ''].filter(Boolean), raw: item };
 }
 function parseJdQueryResult(result, key) {
-  const wrapper = result[key] || result.jd_union_open_goods_query_responce || result.jd_union_open_goods_query_response || result.jd_union_open_goods_jingfen_query_responce || result.jd_union_open_goods_jingfen_query_response || result;
+  const wrapper = result[key] || result.jd_union_open_goods_query_responce || result.jd_union_open_goods_query_response || result.jd_union_open_goods_jingfen_query_responce || result.jd_union_open_goods_jingfen_query_response || result.jd_union_open_goods_promotiongoodsinfo_query_responce || result.jd_union_open_goods_promotiongoodsinfo_query_response || result;
   let queryResult = wrapper.queryResult || wrapper.result || wrapper;
   if (typeof queryResult === 'string') { try { queryResult = JSON.parse(queryResult); } catch (_) {} }
   return queryResult;
@@ -117,6 +118,22 @@ function extractJdGoodsList(queryResult) {
   return asArray(data.goodsResp || data);
 }
 function isForbidden(queryResult) { return String(queryResult?.code || '') === '403' || /无访问权限/.test(String(queryResult?.message || '')); }
+function extractJdSku(input) {
+  const text = String(input || '');
+  const decoded = decodeURIComponent(text);
+  const patterns = [/item\.jd\.com\/(\d+)\.html/i, /item\.m\.jd\.com\/(?:product\/)?(\d+)\.html/i, /sku(?:Id|id)?[=:](\d{5,})/i, /wareId[=:](\d{5,})/i];
+  for (const re of patterns) { const m = decoded.match(re); if (m) return m[1]; }
+  return '';
+}
+async function searchJdItemBySku(skuId) {
+  const raw = await jdRequest('jd.union.open.goods.promotiongoodsinfo.query', { skuIds: String(skuId) });
+  const qr = parseJdQueryResult(raw, 'jd_union_open_goods_promotiongoodsinfo_query_responce');
+  if (qr?.code && String(qr.code) !== '200') throw { jd_error: qr, raw };
+  let data = qr?.data || qr;
+  if (typeof data === 'string') { try { data = JSON.parse(data); } catch (_) {} }
+  const list = asArray(data).map((item) => normalizeJd(item, 'url.promotiongoodsinfo'));
+  return { ok: true, platform: 'jd', source: 'url.promotiongoodsinfo', keyword: String(skuId), total_count: list.length, goods_list: list, raw };
+}
 async function searchPdd(keyword, page = 1, pageSize = 20) {
   const result = await pddRequest('pdd.ddk.goods.search', { keyword, page, page_size: pageSize, with_coupon: 'true', pid: PDD_PID, custom_parameters: PDD_CUSTOM_PARAMETERS });
   if (result.error_response || result.error) throw result;
@@ -124,6 +141,8 @@ async function searchPdd(keyword, page = 1, pageSize = 20) {
   return { ok: true, platform: 'pdd', source: 'real', keyword, total_count: response.total_count || 0, goods_list: (response.goods_list || []).map(normalizePdd) };
 }
 async function searchJd(keyword, page = 1, pageSize = 20) {
+  const sku = extractJdSku(keyword);
+  if (sku) return searchJdItemBySku(sku);
   const goodsRaw = await jdRequest('jd.union.open.goods.query', { goodsReqDTO: { keyword, pageIndex: page, pageSize: Math.min(pageSize, 30), sceneId: 1, isCoupon: 1, hasBestCoupon: 1, pid: JD_PID } });
   let queryResult = parseJdQueryResult(goodsRaw, 'jd_union_open_goods_query_responce');
   let source = 'goods.query';
@@ -159,12 +178,7 @@ function mockGoods(platform, keyword, index, price, tag, shop) {
 function searchMock(platform, keyword) {
   const base = platform === 'pdd' ? 55 : platform === 'jd' ? 66 : platform === 'tb' ? 59 : 62;
   const shopPrefix = { pdd: '拼多多', jd: '京东', tb: '淘宝', douyin: '抖音' }[platform] || platform;
-  const list = [
-    mockGoods(platform, keyword, 1, base, '低价渠道', `${shopPrefix}渠道店`),
-    mockGoods(platform, keyword, 2, base + 10, '授权/专营', `${shopPrefix}专营店`),
-    mockGoods(platform, keyword, 3, base + 30, '官方旗舰', `${shopPrefix}官方旗舰店`),
-    mockGoods(platform, keyword, 4, base - 5, '适配款', `${shopPrefix}配件店`),
-  ];
+  const list = [mockGoods(platform, keyword, 1, base, '低价渠道', `${shopPrefix}渠道店`), mockGoods(platform, keyword, 2, base + 10, '授权/专营', `${shopPrefix}专营店`), mockGoods(platform, keyword, 3, base + 30, '官方旗舰', `${shopPrefix}官方旗舰店`), mockGoods(platform, keyword, 4, base - 5, '适配款', `${shopPrefix}配件店`)];
   return { ok: true, platform, source: 'mock', keyword, total_count: list.length, goods_list: list, message: '显式 mock=1 开发调试数据。' };
 }
 async function searchTaobao(keyword) { return providerPlaceholder('tb', keyword); }
@@ -187,7 +201,7 @@ async function unifiedSearch(keyword, platforms, page, pageSize, useMock = false
   });
   const results = await Promise.all(tasks);
   const goods = results.flatMap((result) => result.goods_list || []);
-  return { ok: true, keyword, mock: Boolean(useMock), platforms: wanted, total_count: goods.length, providers: results.map(({ ok, platform, source, total_count, error, message }) => ({ ok, platform, source, total_count: total_count || 0, error, message })), goods_list: goods };
+  return { ok: true, keyword, resolved: extractJdSku(keyword) ? { type: 'jd_sku', sku_id: extractJdSku(keyword) } : null, mock: Boolean(useMock), platforms: wanted, total_count: goods.length, providers: results.map(({ ok, platform, source, total_count, error, message }) => ({ ok, platform, source, total_count: total_count || 0, error, message })), goods_list: goods };
 }
 
 function sendJson(res, status, data) {
@@ -198,10 +212,7 @@ function readBody(req) { return new Promise((resolve) => { let body = ''; req.on
 function findArrayDeep(value, keys = []) {
   if (!value || typeof value !== 'object') return [];
   for (const key of keys) if (Array.isArray(value[key])) return value[key];
-  for (const child of Object.values(value)) {
-    if (Array.isArray(child)) return child;
-    if (child && typeof child === 'object') { const found = findArrayDeep(child, keys); if (found.length) return found; }
-  }
+  for (const child of Object.values(value)) { if (Array.isArray(child)) return child; if (child && typeof child === 'object') { const found = findArrayDeep(child, keys); if (found.length) return found; } }
   return [];
 }
 
@@ -212,7 +223,7 @@ const server = http.createServer(async (req, res) => {
     const useMock = url.searchParams.get('mock') === '1' || url.searchParams.get('mock') === 'true';
 
     if (url.pathname === '/' || url.pathname === '/health') {
-      return sendJson(res, 200, { ok: true, name: '价比比 API', message: '价比比 API 已启动', env: { has_client_id: Boolean(PDD_CLIENT_ID), has_client_secret: Boolean(PDD_CLIENT_SECRET), has_pid: Boolean(PDD_PID), has_jd_app_key: Boolean(JD_APP_KEY), has_jd_app_secret: Boolean(JD_APP_SECRET), has_jd_position_id: Boolean(JD_POSITION_ID), tb_provider: 'placeholder_no_fake_goods', douyin_provider: 'placeholder_no_fake_goods', mock_mode: 'use &mock=1 explicitly' } });
+      return sendJson(res, 200, { ok: true, name: '价比比 API', message: '价比比 API 已启动', env: { has_client_id: Boolean(PDD_CLIENT_ID), has_client_secret: Boolean(PDD_CLIENT_SECRET), has_pid: Boolean(PDD_PID), has_jd_app_key: Boolean(JD_APP_KEY), has_jd_app_secret: Boolean(JD_APP_SECRET), has_jd_position_id: Boolean(JD_POSITION_ID), tb_provider: 'placeholder_no_fake_goods', douyin_provider: 'placeholder_no_fake_goods', mock_mode: 'use &mock=1 explicitly', jd_url_resolve: true } });
     }
 
     if (url.pathname === '/api/search' && req.method === 'GET') {
@@ -223,7 +234,12 @@ const server = http.createServer(async (req, res) => {
       const pageSize = Number(url.searchParams.get('page_size') || '20');
       return sendJson(res, 200, await unifiedSearch(keyword, platforms, page, pageSize, useMock));
     }
-
+    if (url.pathname === '/api/resolve' && req.method === 'GET') {
+      const input = url.searchParams.get('input') || '';
+      const sku = extractJdSku(input);
+      if (sku) return sendJson(res, 200, await searchJdItemBySku(sku));
+      return sendJson(res, 200, { ok: true, resolved: null, goods_list: [], message: '暂时只支持京东商品链接解析。' });
+    }
     if (url.pathname === '/api/pdd/search' && req.method === 'GET') {
       if (useMock) return sendJson(res, 200, searchMock('pdd', url.searchParams.get('keyword') || '充电宝'));
       return sendJson(res, 200, await searchPdd(url.searchParams.get('keyword') || '充电宝', Number(url.searchParams.get('page') || '1'), Number(url.searchParams.get('page_size') || '20')));
@@ -245,7 +261,6 @@ const server = http.createServer(async (req, res) => {
       const item = result.goods_promotion_url_generate_response?.goods_promotion_url_list?.[0] || {};
       return sendJson(res, 200, { ok: true, platform: 'pdd', mobile_short_url: item.mobile_short_url, short_url: item.short_url, mobile_url: item.mobile_url, url: item.url, schema_url: item.schema_url, we_app_info: item.we_app_info, raw: result });
     }
-
     if (url.pathname === '/api/jd/link' && req.method === 'POST') {
       const rawBody = await readBody(req); let body = {};
       try { body = rawBody ? JSON.parse(rawBody) : {}; } catch (_) { body = {}; }
@@ -258,7 +273,6 @@ const server = http.createServer(async (req, res) => {
       const clickURL = result.jd_union_open_promotion_common_get_response?.result?.clickURL || result.result?.clickURL || findArrayDeep(result, ['data'])?.[0]?.clickURL || '';
       return sendJson(res, 200, { ok: true, platform: 'jd', click_url: clickURL, url: clickURL, raw: result });
     }
-
     if ((url.pathname === '/api/tb/link' || url.pathname === '/api/douyin/link') && req.method === 'POST') return sendJson(res, 501, { ok: false, error: 'provider_not_connected', message: '真实 provider 尚未接入，不提供假转链。' });
     return sendJson(res, 404, { error: 'not_found', path: url.pathname });
   } catch (err) {
