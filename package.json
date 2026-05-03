@@ -2,9 +2,9 @@
   "name": "jiabibi-api",
   "version": "1.0.0",
   "description": "Jiabibi PDD API backend",
-  "main": "server.js",
+  "main": "server2.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server2.js"
   },
   "engines": {
     "node": ">=18 <23"
