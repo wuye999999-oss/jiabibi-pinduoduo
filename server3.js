@@ -30,7 +30,15 @@ const jdRoute = `if(url.pathname==='/api/jd/link'&&req.method==='POST'){
 }`;
 
 const oldHealth = "if(url.pathname==='/'||url.pathname==='/health')return sendJson(res,200,{ok:true,name:'价比比 API server2',pdd_ps:'scrape_v2'});";
-const newHealth = "if(url.pathname==='/'||url.pathname==='/health')return sendJson(res,200,{ok:true,name:'价比比 API server3',runtime:'server3',pdd_ps:'scrape_v2',jd_link:'enabled'});";
+const newHealth = "if(url.pathname==='/'||url.pathname==='/health')return sendJson(res,200,{ok:true,name:'价比比 API server3',runtime:'server3',pdd_ps:'scrape_v2',jd_link:'enabled',provider_status:'/api/providers/status'});";
+
+const notFoundRoute = "return sendJson(res,404,{error:'not_found',path:url.pathname})";
+const providerStatusRoute = `if(url.pathname==='/api/providers/status'&&req.method==='GET')return sendJson(res,200,{ok:true,runtime:'server3',providers:[
+  {platform:'pdd',name:'拼多多',configured:!!(PDD_CLIENT_ID&&PDD_CLIENT_SECRET&&PDD_PID),search:true,link:true,ps_scrape:true,source:'pdd.ddk + scrape fallback'},
+  {platform:'jd',name:'京东',configured:!!(JD_APP_KEY&&JD_APP_SECRET),search:true,link:true,source:'jd.union + jingfen fallback'},
+  {platform:'tb',name:'淘宝',configured:false,search:false,link:false,source:'provider_placeholder',next:'等待淘宝客/开放平台 API 接入'},
+  {platform:'douyin',name:'抖音',configured:false,search:false,link:false,source:'provider_placeholder',next:'等待抖音商城开放平台 API 接入'}
+]});`;
 
 if (!code.includes(oldRoute)) {
   console.error('JD disabled route marker not found in server2.js; refusing to boot patched runtime.');
@@ -39,6 +47,7 @@ if (!code.includes(oldRoute)) {
 
 code = code.replace(oldRoute, jdRoute);
 if (code.includes(oldHealth)) code = code.replace(oldHealth, newHealth);
+if (code.includes(notFoundRoute)) code = code.replace(notFoundRoute, providerStatusRoute + notFoundRoute);
 
 // Run the patched server2 code in this process.
 eval(code);
