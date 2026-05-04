@@ -1,10 +1,10 @@
 {
   "name": "jiabibi-api",
   "version": "1.0.0",
-  "description": "Jiabibi PDD API backend",
-  "main": "server2.js",
+  "description": "Jiabibi API backend",
+  "main": "server3.js",
   "scripts": {
-    "start": "node server2.js"
+    "start": "node server3.js"
   },
   "engines": {
     "node": ">=18 <23"
