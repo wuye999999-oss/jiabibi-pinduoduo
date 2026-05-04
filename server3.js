@@ -17,7 +17,7 @@ const jdRoute = `if(url.pathname==='/api/jd/link'&&req.method==='POST'){
     if(!v || typeof v !== 'object') return '';
     if(typeof v.clickURL === 'string' && v.clickURL) return v.clickURL;
     if(typeof v.clickUrl === 'string' && v.clickUrl) return v.clickUrl;
-    if(typeof v.url === 'string' && /union|jd|3\.cn/.test(v.url)) return v.url;
+    if(typeof v.url === 'string' && /union|jd|3\\.cn/.test(v.url)) return v.url;
     for(const child of Object.values(v)){
       const found = findClickURL(child);
       if(found) return found;
@@ -29,12 +29,16 @@ const jdRoute = `if(url.pathname==='/api/jd/link'&&req.method==='POST'){
   return sendJson(res,200,{ok:true,platform:'jd',click_url:clickURL,url:clickURL,raw:result});
 }`;
 
+const oldHealth = "if(url.pathname==='/'||url.pathname==='/health')return sendJson(res,200,{ok:true,name:'价比比 API server2',pdd_ps:'scrape_v2'});";
+const newHealth = "if(url.pathname==='/'||url.pathname==='/health')return sendJson(res,200,{ok:true,name:'价比比 API server3',runtime:'server3',pdd_ps:'scrape_v2',jd_link:'enabled'});";
+
 if (!code.includes(oldRoute)) {
   console.error('JD disabled route marker not found in server2.js; refusing to boot patched runtime.');
   process.exit(1);
 }
 
 code = code.replace(oldRoute, jdRoute);
+if (code.includes(oldHealth)) code = code.replace(oldHealth, newHealth);
 
 // Run the patched server2 code in this process.
 eval(code);
