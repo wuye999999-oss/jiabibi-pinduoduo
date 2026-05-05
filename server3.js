@@ -100,6 +100,18 @@ const jdRoute = `if(url.pathname==='/api/jd/link'&&req.method==='POST'){
 const oldHealth = "if(url.pathname==='/'||url.pathname==='/health')return sendJson(res,200,{ok:true,name:'价比比 API server2',pdd_ps:'scrape_v2'});";
 const newHealth = "if(url.pathname==='/'||url.pathname==='/health')return sendJson(res,200,{ok:true,name:'价比比 API server3',runtime:'server3',pdd_ps:'scrape_v2',jd_link:'enabled',tb_detail:'enabled',jd_account_type:JD_ACCOUNT_TYPE,jd_coverage:JD_COVERAGE,jd_advanced_api:JD_ADVANCED_API,jd_self_operated_full_coverage:JD_SELF_OPERATED_FULL_COVERAGE,tb_enabled:TB_ENABLED,tb_configured:!!(TB_APP_KEY&&TB_APP_SECRET),tb_search_enabled:TB_SEARCH_ENABLED,provider_status:'/api/providers/status'});";
 
+const legacyTbSearchRoute = `if((url.pathname==='/api/search'||url.pathname==='/api/search.json'||url.pathname==='/api/provider/search')&&(req.method==='GET'||req.method==='POST')&&(url.searchParams.get('platform')==='tb'||url.searchParams.get('provider')==='tb')){
+  const rawBody=req.method==='POST'?await readBody(req):'';
+  let body={}; try{body=rawBody?JSON.parse(rawBody):{};}catch(_){body={};}
+  const q=(body.q||body.keyword||url.searchParams.get('q')||url.searchParams.get('keyword')||url.searchParams.get('kw')||'').trim();
+  if(!q) return sendJson(res,400,{ok:false,platform:'tb',error:'missing_keyword',message:'请加 ?q=关键词 或 ?keyword=关键词'});
+  if(!TB_ADZONE_ID) return sendJson(res,400,{ok:false,platform:'tb',error:'missing_tb_adzone_id',message:'TB_ADZONE_ID missing'});
+  const raw=await tbRequest(TB_SEARCH_METHOD,{adzone_id:TB_ADZONE_ID,q,page_size:'20',page_no:'1',platform:'2'});
+  const items=pickTbItems(raw).map(x=>normalizeTbItem(x,'tb.material.search'));
+  return sendJson(res,200,{ok:!(raw.error_response||raw.error||raw.code),platform:'tb',source:'tb.material.search',keyword:q,total_count:items.length,goods_list:items,raw});
+}
+`;
+
 const notFoundRoute = "return sendJson(res,404,{error:'not_found',path:url.pathname})";
 const tbRoutes = `if((url.pathname==='/api/tb/item'||url.pathname==='/api/tb/link')&&(req.method==='GET'||req.method==='POST')){
   const rawBody=req.method==='POST'?await readBody(req):'';
@@ -123,7 +135,7 @@ if(url.pathname==='/api/tb/search'&&(req.method==='GET'||req.method==='POST')){
   if(!TB_ADZONE_ID) return sendJson(res,400,{ok:false,platform:'tb',error:'missing_tb_adzone_id',message:'TB_ADZONE_ID missing'});
   const raw=await tbRequest(TB_SEARCH_METHOD,{adzone_id:TB_ADZONE_ID,q,page_size:'20',page_no:'1',platform:'2'});
   const items=pickTbItems(raw).map(x=>normalizeTbItem(x,'tb.material.search'));
-  return sendJson(res,200,{ok:!(raw.error_response||raw.error||raw.code),platform:'tb',mode:'keyword_search',q,goods_list:items,raw});
+  return sendJson(res,200,{ok:!(raw.error_response||raw.error||raw.code),platform:'tb',mode:'keyword_search',source:'tb.material.search',keyword:q,total_count:items.length,q,goods_list:items,raw});
 }
 `;
 const providerStatusRoute = `if(url.pathname==='/api/providers/status'&&req.method==='GET')return sendJson(res,200,{ok:true,runtime:'server3',providers:[
@@ -140,7 +152,7 @@ if (!code.includes(oldRoute)) {
 
 code = enterprisePrelude + code;
 code = code.replace(oldRoute, jdRoute);
-if (code.includes(oldHealth)) code = code.replace(oldHealth, newHealth);
+if (code.includes(oldHealth)) code = code.replace(oldHealth, newHealth + legacyTbSearchRoute);
 if (code.includes(notFoundRoute)) code = code.replace(notFoundRoute, tbRoutes + providerStatusRoute + notFoundRoute);
 
 // Run the patched server2 code in this process.
