@@ -45,4 +45,20 @@ async function tbRequest(method,biz={}){
   return {error:'tb_request_failed',message:'淘宝接口请求超时或网络不可达',detail:errors};
 }`);
 
+code = code.replace("function parseTbItemId(input){", `async function tbSearchWithFallback(q){
+  const attempts=[];
+  const primary={method:TB_SEARCH_METHOD,biz:{adzone_id:TB_ADZONE_ID,q,page_size:'20',page_no:'1',platform:'2'}};
+  const fallback={method:process.env.TB_SEARCH_FALLBACK_METHOD || 'taobao.tbk.item.get',biz:{fields:'num_iid,title,pict_url,small_images,reserve_price,zk_final_price,user_type,provcity,item_url,nick,seller_id,volume,cat_name,shop_title',q,page_size:'20',page_no:'1',platform:'2'}};
+  for(const t of [primary,fallback]){
+    const raw=await tbRequest(t.method,t.biz);
+    const err=raw&&(raw.error_response||raw.error||raw.code);
+    attempts.push({method:t.method,ok:!err,endpoint:raw&&raw.__endpoint||'',error_response:raw&&raw.error_response||null,error:raw&&raw.error||'',code:raw&&raw.code||''});
+    if(!err){raw.__attempts=attempts;return raw;}
+  }
+  return {error:'tb_search_permission_or_method_failed',message:'淘宝搜索接口权限不足或当前方法不可用',attempts};
+}
+function parseTbItemId(input){`);
+
+code = code.split("const raw=await tbRequest(TB_SEARCH_METHOD,{adzone_id:TB_ADZONE_ID,q,page_size:'20',page_no:'1',platform:'2'});").join("const raw=await tbSearchWithFallback(q);");
+
 new Function('require', code)(require);
