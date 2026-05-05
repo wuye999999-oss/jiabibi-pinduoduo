@@ -98,7 +98,7 @@ const jdRoute = `if(url.pathname==='/api/jd/link'&&req.method==='POST'){
 }`;
 
 const oldHealth = "if(url.pathname==='/'||url.pathname==='/health')return sendJson(res,200,{ok:true,name:'价比比 API server2',pdd_ps:'scrape_v2'});";
-const newHealth = "if(url.pathname==='/'||url.pathname==='/health')return sendJson(res,200,{ok:true,name:'价比比 API server3',runtime:'server3',pdd_ps:'scrape_v2',jd_link:'enabled',tb_detail:'enabled',jd_account_type:JD_ACCOUNT_TYPE,jd_coverage:JD_COVERAGE,jd_advanced_api:JD_ADVANCED_API,jd_self_operated_full_coverage:JD_SELF_OPERATED_FULL_COVERAGE,tb_enabled:TB_ENABLED,tb_configured:!!(TB_APP_KEY&&TB_APP_SECRET),tb_search_enabled:TB_SEARCH_ENABLED,provider_status:'/api/providers/status'});";
+const newHealth = "if(url.pathname==='/'||url.pathname==='/health')return sendJson(res,200,{ok:true,name:'价比比 API server3',runtime:'server3',pdd_ps:'scrape_v2',jd_link:'enabled',tb_detail:'enabled',tb_real_search:'enabled',jd_account_type:JD_ACCOUNT_TYPE,jd_coverage:JD_COVERAGE,jd_advanced_api:JD_ADVANCED_API,jd_self_operated_full_coverage:JD_SELF_OPERATED_FULL_COVERAGE,tb_enabled:TB_ENABLED,tb_configured:!!(TB_APP_KEY&&TB_APP_SECRET),tb_search_enabled:TB_SEARCH_ENABLED,provider_status:'/api/providers/status'});";
 
 const legacyTbSearchRoute = `if((url.pathname==='/api/search'||url.pathname==='/api/search.json'||url.pathname==='/api/provider/search')&&(req.method==='GET'||req.method==='POST')&&(url.searchParams.get('platform')==='tb'||url.searchParams.get('provider')==='tb')){
   const rawBody=req.method==='POST'?await readBody(req):'';
@@ -126,12 +126,12 @@ const tbRoutes = `if((url.pathname==='/api/tb/item'||url.pathname==='/api/tb/lin
   if(raw.error_response||raw.error||raw.code||raw.errorCode||raw.error_response) return sendJson(res,400,{ok:false,platform:'tb',error:'tb_item_error',item_id:itemId,raw,goods:first});
   return sendJson(res,200,{ok:true,platform:'tb',mode:'item_detail',item_id:itemId,goods:first,goods_list:items,raw});
 }
-if(url.pathname==='/api/tb/search'&&(req.method==='GET'||req.method==='POST')){
+if((url.pathname==='/api/tb/search'||url.pathname==='/api/tb/real-search')&&(req.method==='GET'||req.method==='POST')){
   const rawBody=req.method==='POST'?await readBody(req):'';
   let body={}; try{body=rawBody?JSON.parse(rawBody):{};}catch(_){body={};}
   const q=(body.q||body.keyword||url.searchParams.get('q')||url.searchParams.get('keyword')||'').trim();
   if(!TB_SEARCH_ENABLED) return sendJson(res,501,{ok:false,platform:'tb',error:'tb_search_disabled',message:'淘宝关键词搜索待权限，当前先支持链接/商品ID详情',q});
-  if(!q) return sendJson(res,400,{ok:false,platform:'tb',error:'missing_keyword'});
+  if(!q) return sendJson(res,400,{ok:false,platform:'tb',error:'missing_keyword',message:'请加 ?q=关键词'});
   if(!TB_ADZONE_ID) return sendJson(res,400,{ok:false,platform:'tb',error:'missing_tb_adzone_id',message:'TB_ADZONE_ID missing'});
   const raw=await tbRequest(TB_SEARCH_METHOD,{adzone_id:TB_ADZONE_ID,q,page_size:'20',page_no:'1',platform:'2'});
   const items=pickTbItems(raw).map(x=>normalizeTbItem(x,'tb.material.search'));
@@ -141,7 +141,7 @@ if(url.pathname==='/api/tb/search'&&(req.method==='GET'||req.method==='POST')){
 const providerStatusRoute = `if(url.pathname==='/api/providers/status'&&req.method==='GET')return sendJson(res,200,{ok:true,runtime:'server3',providers:[
   {platform:'pdd',name:'拼多多',configured:!!(PDD_CLIENT_ID&&PDD_CLIENT_SECRET&&PDD_PID),search:true,link:true,ps_scrape:true,coverage:'api_plus_scrape_fallback',source:'pdd.ddk + scrape fallback'},
   {platform:'jd',name:'京东',configured:!!(JD_APP_KEY&&JD_APP_SECRET),search:true,link:true,coverage:JD_COVERAGE,account_type:JD_ACCOUNT_TYPE,advanced_api:JD_ADVANCED_API,requires_enterprise_for_advanced:false,self_operated_full_coverage:JD_SELF_OPERATED_FULL_COVERAGE,source:'jd.union enterprise mode',notice:JD_ADVANCED_API?'企业模式：高级接口开关已开启':'企业模式：仍使用通用接口，等待高级接口权限'},
-  {platform:'tb',name:'淘宝',configured:!!(TB_APP_KEY&&TB_APP_SECRET),enabled:TB_ENABLED,search:TB_SEARCH_ENABLED,link:true,item_detail:true,coverage:TB_SEARCH_ENABLED?'item_detail_plus_search':'item_detail_only',source:'taobao TOP / alimama',notice:TB_SEARCH_ENABLED?'淘宝：详情和搜索已开启':'淘宝：详情/链接先接入，关键词搜索待权限'},
+  {platform:'tb',name:'淘宝',configured:!!(TB_APP_KEY&&TB_APP_SECRET),enabled:TB_ENABLED,search:TB_SEARCH_ENABLED,link:true,item_detail:true,real_search:true,coverage:TB_SEARCH_ENABLED?'item_detail_plus_search':'item_detail_only',source:'taobao TOP / alimama',notice:TB_SEARCH_ENABLED?'淘宝：详情和搜索已开启':'淘宝：详情/链接先接入，关键词搜索待权限'},
   {platform:'douyin',name:'抖音',configured:false,search:false,link:false,source:'provider_placeholder',next:'等待抖音商城开放平台 API 接入'}
 ]});`;
 
