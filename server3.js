@@ -25,17 +25,17 @@ const jdRoute = `if(url.pathname==='/api/jd/link'&&req.method==='POST'){
     return '';
   }
   const clickURL = findClickURL(result);
-  if(result.error_response || result.error || result.code) return sendJson(res,400,{ok:false,platform:'jd',error:'jd_link_error',raw:result,click_url:clickURL});
-  return sendJson(res,200,{ok:true,platform:'jd',click_url:clickURL,url:clickURL,raw:result});
+  if(result.error_response || result.error || result.code) return sendJson(res,400,{ok:false,platform:'jd',error:'jd_link_error',raw:result,click_url:clickURL,coverage:'common_limited'});
+  return sendJson(res,200,{ok:true,platform:'jd',click_url:clickURL,url:clickURL,coverage:'common_limited',advanced_api:false,self_operated_full_coverage:false,raw:result});
 }`;
 
 const oldHealth = "if(url.pathname==='/'||url.pathname==='/health')return sendJson(res,200,{ok:true,name:'价比比 API server2',pdd_ps:'scrape_v2'});";
-const newHealth = "if(url.pathname==='/'||url.pathname==='/health')return sendJson(res,200,{ok:true,name:'价比比 API server3',runtime:'server3',pdd_ps:'scrape_v2',jd_link:'enabled',provider_status:'/api/providers/status'});";
+const newHealth = "if(url.pathname==='/'||url.pathname==='/health')return sendJson(res,200,{ok:true,name:'价比比 API server3',runtime:'server3',pdd_ps:'scrape_v2',jd_link:'enabled_common_limited',jd_advanced_api:false,jd_self_operated_full_coverage:false,provider_status:'/api/providers/status'});";
 
 const notFoundRoute = "return sendJson(res,404,{error:'not_found',path:url.pathname})";
 const providerStatusRoute = `if(url.pathname==='/api/providers/status'&&req.method==='GET')return sendJson(res,200,{ok:true,runtime:'server3',providers:[
-  {platform:'pdd',name:'拼多多',configured:!!(PDD_CLIENT_ID&&PDD_CLIENT_SECRET&&PDD_PID),search:true,link:true,ps_scrape:true,source:'pdd.ddk + scrape fallback'},
-  {platform:'jd',name:'京东',configured:!!(JD_APP_KEY&&JD_APP_SECRET),search:true,link:true,source:'jd.union + jingfen fallback'},
+  {platform:'pdd',name:'拼多多',configured:!!(PDD_CLIENT_ID&&PDD_CLIENT_SECRET&&PDD_PID),search:true,link:true,ps_scrape:true,coverage:'api_plus_scrape_fallback',source:'pdd.ddk + scrape fallback'},
+  {platform:'jd',name:'京东',configured:!!(JD_APP_KEY&&JD_APP_SECRET),search:true,link:true,coverage:'common_limited',advanced_api:false,requires_enterprise_for_advanced:true,self_operated_full_coverage:false,source:'jd.union common interface',notice:'个人推客仅通用接口；高级接口/完整自营覆盖需企业商号申请'},
   {platform:'tb',name:'淘宝',configured:false,search:false,link:false,source:'provider_placeholder',next:'等待淘宝客/开放平台 API 接入'},
   {platform:'douyin',name:'抖音',configured:false,search:false,link:false,source:'provider_placeholder',next:'等待抖音商城开放平台 API 接入'}
 ]});`;
