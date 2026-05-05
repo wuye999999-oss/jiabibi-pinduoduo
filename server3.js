@@ -4,10 +4,10 @@ let code = fs.readFileSync(require.resolve('./server2.js'), 'utf8');
 
 const oldRoute = "if(url.pathname==='/api/jd/link'&&req.method==='POST')return sendJson(res,501,{ok:false,error:'jd_link_disabled_in_server2'});";
 
-const enterprisePrelude = `const JD_ACCOUNT_TYPE = process.env.JD_ACCOUNT_TYPE || 'personal';
+const enterprisePrelude = `const JD_ACCOUNT_TYPE = 'enterprise';
 const JD_ADVANCED_API = String(process.env.JD_ADVANCED_API || '').toLowerCase() === 'true';
 const JD_SELF_OPERATED_FULL_COVERAGE = String(process.env.JD_SELF_OPERATED_FULL_COVERAGE || '').toLowerCase() === 'true';
-const JD_COVERAGE = JD_ACCOUNT_TYPE === 'enterprise' ? (JD_ADVANCED_API ? 'enterprise_advanced' : 'enterprise_common') : 'common_limited';
+const JD_COVERAGE = JD_ADVANCED_API ? 'enterprise_advanced' : 'enterprise_common';
 `;
 
 const jdRoute = `if(url.pathname==='/api/jd/link'&&req.method==='POST'){
@@ -41,7 +41,7 @@ const newHealth = "if(url.pathname==='/'||url.pathname==='/health')return sendJs
 const notFoundRoute = "return sendJson(res,404,{error:'not_found',path:url.pathname})";
 const providerStatusRoute = `if(url.pathname==='/api/providers/status'&&req.method==='GET')return sendJson(res,200,{ok:true,runtime:'server3',providers:[
   {platform:'pdd',name:'拼多多',configured:!!(PDD_CLIENT_ID&&PDD_CLIENT_SECRET&&PDD_PID),search:true,link:true,ps_scrape:true,coverage:'api_plus_scrape_fallback',source:'pdd.ddk + scrape fallback'},
-  {platform:'jd',name:'京东',configured:!!(JD_APP_KEY&&JD_APP_SECRET),search:true,link:true,coverage:JD_COVERAGE,account_type:JD_ACCOUNT_TYPE,advanced_api:JD_ADVANCED_API,requires_enterprise_for_advanced:JD_ACCOUNT_TYPE!=='enterprise',self_operated_full_coverage:JD_SELF_OPERATED_FULL_COVERAGE,source:JD_ACCOUNT_TYPE==='enterprise'?'jd.union enterprise mode':'jd.union common interface',notice:JD_ACCOUNT_TYPE==='enterprise'?(JD_ADVANCED_API?'企业模式：高级接口开关已开启':'企业模式：仍使用通用接口，等待高级接口权限'):'个人推客仅通用接口；高级接口/完整自营覆盖需企业商号申请'},
+  {platform:'jd',name:'京东',configured:!!(JD_APP_KEY&&JD_APP_SECRET),search:true,link:true,coverage:JD_COVERAGE,account_type:JD_ACCOUNT_TYPE,advanced_api:JD_ADVANCED_API,requires_enterprise_for_advanced:false,self_operated_full_coverage:JD_SELF_OPERATED_FULL_COVERAGE,source:'jd.union enterprise mode',notice:JD_ADVANCED_API?'企业模式：高级接口开关已开启':'企业模式：仍使用通用接口，等待高级接口权限'},
   {platform:'tb',name:'淘宝',configured:false,search:false,link:false,source:'provider_placeholder',next:'等待淘宝客/开放平台 API 接入'},
   {platform:'douyin',name:'抖音',configured:false,search:false,link:false,source:'provider_placeholder',next:'等待抖音商城开放平台 API 接入'}
 ]});`;
