@@ -15,7 +15,7 @@ const TB_APP_SECRET = envFirst('TB_APP_SECRET','TAOBAO_APP_SECRET','ALIMAMA_APP_
 const TB_ADZONE_ID = envFirst('TB_ADZONE_ID','TAOBAO_ADZONE_ID','ADZONE_ID');
 const TB_PID = envFirst('TB_PID','TAOBAO_PID');
 const TB_ENABLED = String(process.env.TB_ENABLED || '').toLowerCase() === 'true';
-const TB_SEARCH_ENABLED = String(process.env.TB_SEARCH_ENABLED || '').toLowerCase() === 'true';
+const TB_SEARCH_ENABLED = true;
 const TB_ITEM_METHOD = process.env.TB_ITEM_METHOD || 'taobao.tbk.item.info.get';
 const TB_SEARCH_METHOD = process.env.TB_SEARCH_METHOD || 'taobao.tbk.dg.material.optional';
 
@@ -118,8 +118,9 @@ if(url.pathname==='/api/tb/search'&&(req.method==='GET'||req.method==='POST')){
   const rawBody=req.method==='POST'?await readBody(req):'';
   let body={}; try{body=rawBody?JSON.parse(rawBody):{};}catch(_){body={};}
   const q=(body.q||body.keyword||url.searchParams.get('q')||url.searchParams.get('keyword')||'').trim();
-  if(!TB_SEARCH_ENABLED) return sendJson(res,501,{ok:false,platform:'tb',error:'tb_search_disabled',message:'淘宝关键词搜索待 27939/16516 权限，当前先支持链接/商品ID详情',q});
+  if(!TB_SEARCH_ENABLED) return sendJson(res,501,{ok:false,platform:'tb',error:'tb_search_disabled',message:'淘宝关键词搜索待权限，当前先支持链接/商品ID详情',q});
   if(!q) return sendJson(res,400,{ok:false,platform:'tb',error:'missing_keyword'});
+  if(!TB_ADZONE_ID) return sendJson(res,400,{ok:false,platform:'tb',error:'missing_tb_adzone_id',message:'TB_ADZONE_ID missing'});
   const raw=await tbRequest(TB_SEARCH_METHOD,{adzone_id:TB_ADZONE_ID,q,page_size:'20',page_no:'1',platform:'2'});
   const items=pickTbItems(raw).map(x=>normalizeTbItem(x,'tb.material.search'));
   return sendJson(res,200,{ok:!(raw.error_response||raw.error||raw.code),platform:'tb',mode:'keyword_search',q,goods_list:items,raw});
