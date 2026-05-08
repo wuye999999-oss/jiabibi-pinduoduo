@@ -1,13 +1,1 @@
-{
-  "name": "jiabibi-api",
-  "version": "1.0.0",
-  "description": "Jiabibi API backend",
-  "main": "server5.js",
-  "scripts": {
-    "start": "node server5.js"
-  },
-  "engines": {
-    "node": ">=18 <23"
-  },
-  "dependencies": {}
-}
+{"name":"jiabibi-api","version":"1.0.0","description":"Jiabibi API backend","main":"server6.js","scripts":{"start":"node server6.js"},"engines":{"node":">=18 <23"},"dependencies":{}}
