@@ -3,12 +3,27 @@ const nodeFs = require('fs');
 
 let code = nodeFs.readFileSync(require.resolve('./server3.js'), 'utf8');
 
+function replaceFunction(src, name, replacement) {
+  const start = src.indexOf('function ' + name + '(');
+  if (start < 0) return src;
+  const brace = src.indexOf('{', start);
+  if (brace < 0) return src;
+  let depth = 0;
+  for (let i = brace; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === '{') depth++;
+    else if (ch === '}') depth--;
+    if (depth === 0) return src.slice(0, start) + replacement + src.slice(i + 1);
+  }
+  return src;
+}
+
 code = code.replace(
   "const TB_API_URL = process.env.TB_API_URL || 'https://eco.taobao.com/router/rest';",
   "const TB_API_URL = process.env.TB_API_URL || 'https://eco.taobao.com/router/rest';\nconst TB_API_FALLBACK_URL = process.env.TB_API_FALLBACK_URL || 'http://gw.api.taobao.com/router/rest';\nconst TB_TIMEOUT_MS = Number(process.env.TB_TIMEOUT_MS || 6500);"
 );
 
-code = code.replace(/async function tbRequest\(method,biz=\{\}\)\{[\s\S]*?return postForm\(TB_API_URL,p\);\n\}/, `function tbPostForm(endpoint,params,timeoutMs=6500){
+code = replaceFunction(code, 'tbRequest', `function tbPostForm(endpoint,params,timeoutMs=6500){
   return new Promise((resolve,reject)=>{
     const body=new URLSearchParams(params).toString();
     let u; try{u=new URL(endpoint)}catch(e){return reject(e)}
@@ -45,9 +60,30 @@ async function tbRequest(method,biz={}){
   return {error:'tb_request_failed',message:'淘宝接口请求超时或网络不可达',detail:errors};
 }`);
 
-code = code.replace(/function normalizeTbItem\(i,source='tb\.item\.info'\)\{[\s\S]*?\n\}/, `function normalizeTbItem(i,source='tb.item.info'){
+code = replaceFunction(code, 'pickTbItems', `function pickTbItems(raw){
+  const direct = raw && raw.tbk_dg_material_optional_upgrade_response && raw.tbk_dg_material_optional_upgrade_response.result_list && raw.tbk_dg_material_optional_upgrade_response.result_list.map_data;
+  if (Array.isArray(direct)) return direct.slice(0,20);
+  const out=[];
+  function walk(v){
+    if(!v||typeof v!=='object') return;
+    if(Array.isArray(v)){ v.forEach(walk); return; }
+    if(v.item_basic_info||v.price_promotion_info||v.publish_info){ out.push(v); return; }
+    if(v.num_iid||v.item_id||v.itemId||v.auction_id||v.title||v.raw_title||v.short_title){ out.push(v); return; }
+    Object.values(v).forEach(x=>{ if(x&&typeof x==='object') walk(x); });
+  }
+  walk(raw);
+  const seen=new Set();
+  return out.filter(x=>{
+    const b=x.item_basic_info||x.basic_info||x;
+    const k=String(x.item_id||b.num_iid||b.item_id||b.itemId||b.auction_id||b.title||b.short_title||Math.random());
+    if(seen.has(k))return false; seen.add(k); return true;
+  }).slice(0,20);
+}`);
+
+code = replaceFunction(code, 'normalizeTbItem', `function normalizeTbItem(i,source='tb.item.info'){
   const basic=i.item_basic_info||i.basic_info||i;
   const promo=i.price_promotion_info||{};
+  const publish=i.publish_info||{};
   const price=Number(promo.final_promotion_price||i.final_promotion_price||basic.zk_final_price||basic.reserve_price||basic.price||0);
   const id=String(i.item_id||basic.num_iid||basic.item_id||basic.itemId||basic.auction_id||'');
   const title=basic.title||basic.short_title||basic.raw_title||i.title||'淘宝商品';
@@ -56,12 +92,13 @@ code = code.replace(/function normalizeTbItem\(i,source='tb\.item\.info'\)\{[\s\
   const promoList=promo.final_promotion_path_list&&promo.final_promotion_path_list.final_promotion_path_map_data;
   const coupon=Array.isArray(promoList)&&promoList[0]?promoList[0]:{};
   const couponDiscount=Number(coupon.promotion_fee||0);
+  const buyUrl=publish.coupon_share_url||publish.click_url||basic.item_url||i.item_url||i.url||'';
   return {
     platform:'tb',source,
     goods_name:title,goods_desc:basic.sub_title||title,brand_name:basic.brand_name||'',shop_name:basic.shop_title||basic.nick||'',
     goods_image_url:httpsUrl(img),goods_thumbnail_url:httpsUrl(img),goods_id:id,num_iid:id,
     sales_tip:sales?String(sales):'',min_group_price_yuan:price,coupon_discount_yuan:couponDiscount,coupon_price_yuan:price,
-    has_coupon:couponDiscount>0,unified_tags:['淘宝','关键词搜索'],material_url:basic.item_url||i.item_url||i.url||'',raw:i
+    has_coupon:couponDiscount>0,unified_tags:['淘宝','关键词搜索'],material_url:httpsUrl(buyUrl),url:httpsUrl(buyUrl),raw:i
   };
 }`);
 
