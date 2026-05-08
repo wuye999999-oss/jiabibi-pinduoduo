@@ -93,12 +93,17 @@ code = replaceFunction(code, 'normalizeTbItem', `function normalizeTbItem(i,sour
   const coupon=Array.isArray(promoList)&&promoList[0]?promoList[0]:{};
   const couponDiscount=Number(coupon.promotion_fee||0);
   const buyUrl=publish.coupon_share_url||publish.click_url||basic.item_url||i.item_url||i.url||'';
+  const directUrl=httpsUrl(buyUrl);
+  const fallbackUrl=title ? ('https://s.m.taobao.com/h5?q=' + encodeURIComponent(title)) : '';
+  const finalUrl=directUrl||fallbackUrl;
   return {
     platform:'tb',source,
     goods_name:title,goods_desc:basic.sub_title||title,brand_name:basic.brand_name||'',shop_name:basic.shop_title||basic.nick||'',
     goods_image_url:httpsUrl(img),goods_thumbnail_url:httpsUrl(img),goods_id:id,num_iid:id,
     sales_tip:sales?String(sales):'',min_group_price_yuan:price,coupon_discount_yuan:couponDiscount,coupon_price_yuan:price,
-    has_coupon:couponDiscount>0,unified_tags:['淘宝','关键词搜索'],material_url:httpsUrl(buyUrl),url:httpsUrl(buyUrl),raw:i
+    has_coupon:couponDiscount>0,unified_tags:['淘宝','关键词搜索'],
+    material_url:finalUrl,url:finalUrl,item_url:finalUrl,direct_buy_url:!!directUrl,buy_link_status:directUrl?'direct':'fallback_search',
+    raw:i
   };
 }`);
 
