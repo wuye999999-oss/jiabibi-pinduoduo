@@ -81,4 +81,22 @@ function parseTbItemId(input){`);
 
 code = code.split("const raw=await tbRequest(TB_SEARCH_METHOD,{adzone_id:TB_ADZONE_ID,q,page_size:'20',page_no:'1',platform:'2'});").join("const raw=await tbSearchWithFallback(q);");
 
+// Stage 3: make Taobao a first-class provider in unified /api/search, not only a front-end hydration patch.
+code = code.replace(
+  "async function searchTaobao(k){return providerPlaceholder('tb',k)}",
+  `async function searchTaobao(k){
+    const q=String(k||'').trim();
+    if(!q) return providerPlaceholder('tb',q,'淘宝关键词为空');
+    if(!TB_ENABLED) return providerPlaceholder('tb',q,'淘宝未启用：TB_ENABLED is not true');
+    if(!TB_ADZONE_ID) return providerPlaceholder('tb',q,'淘宝 adzone_id 缺失');
+    const raw=await tbSearchWithFallback(q);
+    const items=pickTbItems(raw).map(x=>normalizeTbItem(x,'tb.material.search'));
+    const failed=raw&&(raw.error_response||raw.error||raw.code);
+    if(failed){
+      return {ok:false,platform:'tb',source:'tb.material.search',keyword:q,total_count:0,goods_list:[],error:raw.error||raw.code||'tb_search_failed',message:raw.message||'淘宝搜索接口返回异常',raw};
+    }
+    return {ok:true,platform:'tb',source:'tb.material.search',keyword:q,total_count:items.length,goods_list:items,raw};
+  }`
+);
+
 new Function('require', code)(require);
