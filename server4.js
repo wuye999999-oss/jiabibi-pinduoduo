@@ -45,6 +45,26 @@ async function tbRequest(method,biz={}){
   return {error:'tb_request_failed',message:'淘宝接口请求超时或网络不可达',detail:errors};
 }`);
 
+code = code.replace(/function normalizeTbItem\(i,source='tb\.item\.info'\)\{[\s\S]*?\n\}/, `function normalizeTbItem(i,source='tb.item.info'){
+  const basic=i.item_basic_info||i.basic_info||i;
+  const promo=i.price_promotion_info||{};
+  const price=Number(promo.final_promotion_price||i.final_promotion_price||basic.zk_final_price||basic.reserve_price||basic.price||0);
+  const id=String(i.item_id||basic.num_iid||basic.item_id||basic.itemId||basic.auction_id||'');
+  const title=basic.title||basic.short_title||basic.raw_title||i.title||'淘宝商品';
+  const img=basic.pict_url||basic.pic_url||basic.white_image||i.pict_url||'';
+  const sales=basic.annual_vol||basic.tk_total_sales||basic.volume||i.volume||'';
+  const promoList=promo.final_promotion_path_list&&promo.final_promotion_path_list.final_promotion_path_map_data;
+  const coupon=Array.isArray(promoList)&&promoList[0]?promoList[0]:{};
+  const couponDiscount=Number(coupon.promotion_fee||0);
+  return {
+    platform:'tb',source,
+    goods_name:title,goods_desc:basic.sub_title||title,brand_name:basic.brand_name||'',shop_name:basic.shop_title||basic.nick||'',
+    goods_image_url:httpsUrl(img),goods_thumbnail_url:httpsUrl(img),goods_id:id,num_iid:id,
+    sales_tip:sales?String(sales):'',min_group_price_yuan:price,coupon_discount_yuan:couponDiscount,coupon_price_yuan:price,
+    has_coupon:couponDiscount>0,unified_tags:['淘宝','关键词搜索'],material_url:basic.item_url||i.item_url||i.url||'',raw:i
+  };
+}`);
+
 code = code.replace("function parseTbItemId(input){", `async function tbSearchWithFallback(q){
   const attempts=[];
   const primary={method:TB_SEARCH_METHOD,biz:{adzone_id:TB_ADZONE_ID,q,page_size:'20',page_no:'1',platform:'2'}};
