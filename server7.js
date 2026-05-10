@@ -226,14 +226,13 @@ async function tbRequest(method, biz = {}) {
   const params = cleanParams({ method, app_key: TB_APP_KEY, timestamp: tbTimestamp(), format: 'json', v: '2.0', sign_method: 'md5', ...biz });
   params.sign = tbSign(params);
   const errors = [];
-  // Fix 1: use TB_TIMEOUT_MS constant instead of hardcoded literal
   for (const endpoint of [TB_API_FALLBACK_URL, TB_API_URL].filter((x, i, a) => x && a.indexOf(x) === i)) {
     try { const raw = await postForm(endpoint, params, TB_TIMEOUT_MS); raw.__endpoint = endpoint; return raw; }
     catch (e) { errors.push({ endpoint, code: e.code || '', message: e.message || String(e) }); }
   }
   return { error: 'tb_request_failed', message: '淘宝接口请求失败', detail: errors };
 }
-// Fix 2: dedup keyed on num_iid + title to prevent duplicate TB results
+// Fix 2: dedup keyed on num_iid + title
 function pickTbItems(raw) {
   const direct = raw && raw.tbk_dg_material_optional_upgrade_response && raw.tbk_dg_material_optional_upgrade_response.result_list && raw.tbk_dg_material_optional_upgrade_response.result_list.map_data;
   if (Array.isArray(direct)) return direct.slice(0, 20);
@@ -244,14 +243,13 @@ function pickTbItems(raw) {
     const b = x.item_basic_info || x.basic_info || x;
     const numIid = String(x.item_id || b.num_iid || b.item_id || '');
     const titleKey = String(b.title || b.short_title || b.raw_title || x.title || '');
-    // Prefer num_iid for exact dedup; fall back to title for items without an ID
     const key = numIid || titleKey || String(Math.random());
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   }).slice(0, 20);
 }
-// Fix 3: try more URL fields so material_url is not empty
+// Fix 3: extended URL field list
 function normalizeTb(item, source = 'tb.material.search') {
   const basic = item.item_basic_info || item.basic_info || item;
   const promo = item.price_promotion_info || {};
@@ -262,7 +260,6 @@ function normalizeTb(item, source = 'tb.material.search') {
   const coupon = Array.isArray(promoList) && promoList[0] ? promoList[0] : {};
   const price = Number(promo.final_promotion_price || item.final_promotion_price || basic.zk_final_price || basic.reserve_price || basic.price || 0);
   const couponDiscount = Number(coupon.promotion_fee || 0);
-  // Fix 3: extended URL field list — click_url, coupon_share_url, item_url, detail_url, goods_url
   const direct = httpsUrl(
     publish.click_url ||
     publish.coupon_share_url ||
@@ -277,29 +274,7 @@ function normalizeTb(item, source = 'tb.material.search') {
   );
   const fallback = title ? `https://s.m.taobao.com/h5?q=${encodeURIComponent(title)}` : '';
   const url = direct || fallback;
-  return {
-    platform: 'tb', source,
-    goods_name: title,
-    goods_desc: basic.sub_title || title,
-    brand_name: basic.brand_name || '',
-    shop_name: basic.shop_title || basic.nick || '',
-    goods_image_url: httpsUrl(image),
-    goods_thumbnail_url: httpsUrl(image),
-    goods_id: String(item.item_id || basic.num_iid || basic.item_id || ''),
-    num_iid: String(item.item_id || basic.num_iid || basic.item_id || ''),
-    sales_tip: String(basic.annual_vol || basic.tk_total_sales || basic.volume || ''),
-    min_group_price_yuan: price,
-    coupon_discount_yuan: couponDiscount,
-    coupon_price_yuan: price,
-    has_coupon: couponDiscount > 0,
-    unified_tags: ['淘宝', '关键词搜索'],
-    material_url: url,
-    url,
-    item_url: url,
-    direct_buy_url: !!direct,
-    buy_link_status: direct ? 'direct' : 'fallback_search',
-    raw: item
-  };
+  return { platform: 'tb', source, goods_name: title, goods_desc: basic.sub_title || title, brand_name: basic.brand_name || '', shop_name: basic.shop_title || basic.nick || '', goods_image_url: httpsUrl(image), goods_thumbnail_url: httpsUrl(image), goods_id: String(item.item_id || basic.num_iid || basic.item_id || ''), num_iid: String(item.item_id || basic.num_iid || basic.item_id || ''), sales_tip: String(basic.annual_vol || basic.tk_total_sales || basic.volume || ''), min_group_price_yuan: price, coupon_discount_yuan: couponDiscount, coupon_price_yuan: price, has_coupon: couponDiscount > 0, unified_tags: ['淘宝', '关键词搜索'], material_url: url, url, item_url: url, direct_buy_url: !!direct, buy_link_status: direct ? 'direct' : 'fallback_search', raw: item };
 }
 async function searchTb(q) {
   if (!TB_ENABLED) return { ok: false, platform: 'tb', keyword: q, total_count: 0, goods_list: [], error: 'tb_disabled' };
