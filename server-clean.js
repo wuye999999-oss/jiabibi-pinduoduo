@@ -4,6 +4,9 @@ const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
 
+// Sandbox module loaded lazily — gracefully absent if playwright not installed
+const sandboxMod = (() => { try { return require('./sandbox/routes'); } catch (_) { return null; } })();
+
 const PORT = process.env.PORT || 3000;
 
 function envFirst(...names) {
@@ -35,7 +38,7 @@ function sendJson(res, status, body) {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS'
+    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS,DELETE'
   });
   res.end(JSON.stringify(body, null, 2));
 }
@@ -190,7 +193,7 @@ async function jdLink(body) {
   const raw = await jdRequest(JD_PROMOTION_METHOD, { promotionCodeReq: cleanParams({ materialId, couponUrl: body.coupon_url || body.couponUrl || '', siteId: JD_SITE_ID, positionId: JD_POSITION_ID }) });
   const text = JSON.stringify(raw);
   const m = text.match(/https?:\\?\/\\?\/[^"\\]+/);
-  const url = m ? m[0].replace(/\\\//g, '/') : '';
+  const url = m ? m[0].replace(/\\\/g, '/') : '';
   return { ok: !!url, platform: 'jd', url, material_url: url, raw };
 }
 
@@ -259,7 +262,7 @@ async function tbItem(input) {
   return { ok: !(raw.error_response || raw.error || raw.code), platform: 'tb', mode: 'item_detail', item_id: id, goods: items[0] || null, goods_list: items, raw };
 }
 
-// ---------- Douyin / Pangolin E-commerce CPS ----------
+// ---------- Douyin ----------
 const DOUYIN_API_HOST = (envFirst('DOUYIN_API_HOST', 'DOUYIN_CPS_API_HOST') || 'https://ecom.pangolin-sdk-toutiao.com').replace(/\/$/, '');
 const DOUYIN_APP_ID = envFirst('DOUYIN_APP_ID', 'DOUYIN_CPS_APP_ID');
 const DOUYIN_USER_ID = envFirst('DOUYIN_USER_ID', 'DOUYIN_CPS_USER_ID', 'DOUYIN_ROLE_ID', 'DOUYIN_CPS_ROLE_ID');
@@ -270,21 +273,7 @@ const DOUYIN_SIGN_MODE = envFirst('DOUYIN_SIGN_MODE') || 'secure_key_wrap_sorted
 const DOUYIN_CONFIGURED = !!(DOUYIN_APP_ID && DOUYIN_USER_ID && DOUYIN_ROLE_ID && DOUYIN_SECURITY_KEY);
 function douyinSafeNum(v) { const n = Number(v); return Number.isFinite(n) && String(v).trim() !== '' ? n : String(v || ''); }
 function douyinSelfCheck() {
-  return {
-    ok: true,
-    platform: 'douyin',
-    enabled: DOUYIN_ENABLED,
-    configured: DOUYIN_CONFIGURED,
-    api_host: DOUYIN_API_HOST,
-    app_id_present: !!DOUYIN_APP_ID,
-    user_id_present: !!DOUYIN_USER_ID,
-    role_id_present: !!DOUYIN_ROLE_ID,
-    security_key_present: !!DOUYIN_SECURITY_KEY,
-    security_key_masked: DOUYIN_SECURITY_KEY ? DOUYIN_SECURITY_KEY.slice(0, 3) + '***' + DOUYIN_SECURITY_KEY.slice(-3) : '',
-    sign_mode: DOUYIN_SIGN_MODE,
-    no_secret_in_repo: true,
-    required_env: ['DOUYIN_CPS_ENABLED=true', 'DOUYIN_APP_ID', 'DOUYIN_USER_ID', 'DOUYIN_ROLE_ID', 'DOUYIN_SECURITY_KEY']
-  };
+  return { ok: true, platform: 'douyin', enabled: DOUYIN_ENABLED, configured: DOUYIN_CONFIGURED, api_host: DOUYIN_API_HOST, app_id_present: !!DOUYIN_APP_ID, user_id_present: !!DOUYIN_USER_ID, role_id_present: !!DOUYIN_ROLE_ID, security_key_present: !!DOUYIN_SECURITY_KEY, security_key_masked: DOUYIN_SECURITY_KEY ? DOUYIN_SECURITY_KEY.slice(0, 3) + '***' + DOUYIN_SECURITY_KEY.slice(-3) : '', sign_mode: DOUYIN_SIGN_MODE, no_secret_in_repo: true, required_env: ['DOUYIN_CPS_ENABLED=true', 'DOUYIN_APP_ID', 'DOUYIN_USER_ID', 'DOUYIN_ROLE_ID', 'DOUYIN_SECURITY_KEY'] };
 }
 function douyinSign(params) {
   const keys = Object.keys(params).filter(k => k !== 'sign' && params[k] !== undefined && params[k] !== null).sort();
@@ -314,14 +303,7 @@ function normalizeDouyinProduct(p, source = 'douyin.cps.product.search') {
   const normalFen = Number(p.price || p.coupon_price || 0);
   const image = p.cover || p.image || (Array.isArray(p.imgs) ? p.imgs[0] : '') || '';
   const url = p.public_plan_detail_url || p.detail_url || p.product_url || '';
-  return {
-    platform: 'douyin', source,
-    goods_name: p.title || p.product_name || '抖音商品', goods_desc: p.title || p.product_name || '', brand_name: p.brand_name || p.brand_name_cn || '', shop_name: p.shop_name || '',
-    goods_image_url: httpsUrl(image), goods_thumbnail_url: httpsUrl(image), goods_id: String(p.product_id || ''), product_id: String(p.product_id || ''),
-    sales_tip: p.sales ? String(p.sales) + '销量' : '', min_group_price_yuan: yuanFromFen(normalFen), coupon_discount_yuan: Math.max(0, yuanFromFen(normalFen) - yuanFromFen(priceFen)), coupon_price_yuan: yuanFromFen(priceFen || normalFen),
-    has_coupon: !!p.coupon_price && Number(p.coupon_price) > 0 && Number(p.coupon_price) < Number(p.price || 0), unified_tags: ['抖音CPS'], material_url: url, url, product_url: url,
-    product_ext: p.ext || p.product_ext || '', commission_ratio: p.cos_ratio || p.public_plan_cos_ratio || 0, commission_fee_yuan: yuanFromFen(p.cos_fee || 0), raw: p
-  };
+  return { platform: 'douyin', source, goods_name: p.title || p.product_name || '抖音商品', goods_desc: p.title || p.product_name || '', brand_name: p.brand_name || p.brand_name_cn || '', shop_name: p.shop_name || '', goods_image_url: httpsUrl(image), goods_thumbnail_url: httpsUrl(image), goods_id: String(p.product_id || ''), product_id: String(p.product_id || ''), sales_tip: p.sales ? String(p.sales) + '销量' : '', min_group_price_yuan: yuanFromFen(normalFen), coupon_discount_yuan: Math.max(0, yuanFromFen(normalFen) - yuanFromFen(priceFen)), coupon_price_yuan: yuanFromFen(priceFen || normalFen), has_coupon: !!p.coupon_price && Number(p.coupon_price) > 0 && Number(p.coupon_price) < Number(p.price || 0), unified_tags: ['抖音CPS'], material_url: url, url, product_url: url, product_ext: p.ext || p.product_ext || '', commission_ratio: p.cos_ratio || p.public_plan_cos_ratio || 0, commission_fee_yuan: yuanFromFen(p.cos_fee || 0), raw: p };
 }
 async function searchDouyin(q, page = 1, pageSize = 20) {
   if (!DOUYIN_ENABLED || !DOUYIN_CONFIGURED) return { ok: false, platform: 'douyin', source: 'douyin.cps', keyword: q, total_count: 0, goods_list: [], error: !DOUYIN_ENABLED ? 'douyin_disabled' : 'missing_douyin_env', self_check: douyinSelfCheck() };
@@ -364,7 +346,17 @@ async function handle(req, res) {
   if (req.method === 'OPTIONS') return sendJson(res, 200, { ok: true });
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   try {
-    if (url.pathname === '/' || url.pathname === '/health') return sendJson(res, 200, { ok: true, name: '价比比 API clean', runtime: 'server-clean', pdd_configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID), jd_configured: !!(JD_APP_KEY && JD_APP_SECRET), tb_enabled: TB_ENABLED, tb_configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID), douyin_enabled: DOUYIN_ENABLED, douyin_configured: DOUYIN_CONFIGURED, douyin_secret_present: !!DOUYIN_SECURITY_KEY, provider_status: '/api/providers/status' });
+    // Sandbox routes
+    if (url.pathname.startsWith('/api/sandbox/') || url.pathname === '/api/sandbox/session') {
+      if (!sandboxMod) return sendJson(res, 501, { ok: false, error: 'sandbox_module_not_loaded', hint: 'run npm install then npm run playwright:install' });
+      return sandboxMod.handleSandbox(req, res, url);
+    }
+
+    if (url.pathname === '/' || url.pathname === '/health') {
+      const healthBody = { ok: true, name: '价比比 API clean', runtime: 'server-clean', pdd_configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID), jd_configured: !!(JD_APP_KEY && JD_APP_SECRET), tb_enabled: TB_ENABLED, tb_configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID), douyin_enabled: DOUYIN_ENABLED, douyin_configured: DOUYIN_CONFIGURED, douyin_secret_present: !!DOUYIN_SECURITY_KEY, provider_status: '/api/providers/status' };
+      if (sandboxMod) Object.assign(healthBody, sandboxMod.sandboxHealthInfo());
+      return sendJson(res, 200, healthBody);
+    }
     if (url.pathname === '/api/providers/status') return sendJson(res, 200, { ok: true, runtime: 'server-clean', providers: providerStatus() });
     if (url.pathname === '/api/douyin/self-check') return sendJson(res, 200, douyinSelfCheck());
     const { body, q, platform } = await parseInput(req, url);
