@@ -191,9 +191,15 @@ async function jdLink(body) {
   const materialId = body.material_url || body.materialId || body.url || (skuId ? `https://item.jd.com/${skuId}.html` : '');
   if (!materialId) return { ok: false, platform: 'jd', error: 'missing_material_id' };
   const raw = await jdRequest(JD_PROMOTION_METHOD, { promotionCodeReq: cleanParams({ materialId, couponUrl: body.coupon_url || body.couponUrl || '', siteId: JD_SITE_ID, positionId: JD_POSITION_ID }) });
-  const text = JSON.stringify(raw);
-  const m = text.match(/https?:\\?\/\\?\/[^"\\]+/);
-  const url = m ? m[0].replace(/\\\/g, '/') : '';
+  function findUrl(v, depth) {
+    if (!v || depth > 8) return '';
+    if (typeof v === 'string' && /^https?:\/\//.test(v)) return v;
+    if (typeof v === 'object') {
+      for (const val of Object.values(v)) { const u = findUrl(val, depth + 1); if (u) return u; }
+    }
+    return '';
+  }
+  const url = findUrl(raw, 0);
   return { ok: !!url, platform: 'jd', url, material_url: url, raw };
 }
 
