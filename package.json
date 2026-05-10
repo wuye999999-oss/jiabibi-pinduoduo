@@ -1,1 +1,15 @@
-{"name":"jiabibi-api","version":"1.0.0","description":"Jiabibi API backend","main":"server-clean.js","scripts":{"start":"node server-clean.js"},"engines":{"node":">=18 <23"},"dependencies":{}}
+{
+  "name": "jiabibi-api",
+  "version": "1.1.0",
+  "description": "Jiabibi API backend with 真实授权验价模式",
+  "main": "server-clean.js",
+  "scripts": {
+    "start": "node server-clean.js",
+    "test": "node --test tests/sandbox.test.js",
+    "playwright:install": "npx playwright install --with-deps chromium"
+  },
+  "engines": { "node": ">=18 <23" },
+  "dependencies": {
+    "playwright": "^1.44.0"
+  }
+}
