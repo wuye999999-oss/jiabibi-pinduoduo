@@ -1,8 +1,5 @@
-// server7.js: Jiabibi API
-// Fixes vs server-clean.js:
-//   1. TB_TIMEOUT_MS constant (was undefined — caused 502 on Render)
-//   2. Taobao result dedup keyed on num_iid + title (prevents duplicate cards)
-//   3. normalizeTb material_url now checks more URL fields before falling back
+// server7.js: Jiabibi API v7.1
+// Fixes: TB_TIMEOUT_MS, tb dedup, material_url, JD inner-code check, douyin error passthrough, /api/diag
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
@@ -59,18 +56,17 @@ function postForm(endpoint, params, timeoutMs = 9000) {
     try { u = new URL(endpoint); } catch (e) { return reject(e); }
     const cli = u.protocol === 'http:' ? http : https;
     const req = cli.request({
-      method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs,
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/7.0' }
+      method: 'POST', hostname: u.hostname, path: u.pathname + u.search,
+      port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/7.1' }
     }, res => {
-      let data = '';
-      res.setEncoding('utf8');
+      let data = ''; res.setEncoding('utf8');
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('non_json ' + data.slice(0, 200))); } });
     });
     req.on('timeout', () => req.destroy(Object.assign(new Error('request_timeout'), { code: 'ETIMEDOUT' })));
     req.on('error', reject);
-    req.write(body);
-    req.end();
+    req.write(body); req.end();
   });
 }
 function postJson(endpoint, payload, timeoutMs = 9000) {
@@ -80,18 +76,17 @@ function postJson(endpoint, payload, timeoutMs = 9000) {
     try { u = new URL(endpoint); } catch (e) { return reject(e); }
     const cli = u.protocol === 'http:' ? http : https;
     const req = cli.request({
-      method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs,
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/7.0' }
+      method: 'POST', hostname: u.hostname, path: u.pathname + u.search,
+      port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs,
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/7.1' }
     }, res => {
-      let data = '';
-      res.setEncoding('utf8');
+      let data = ''; res.setEncoding('utf8');
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('non_json ' + data.slice(0, 200))); } });
     });
     req.on('timeout', () => req.destroy(Object.assign(new Error('request_timeout'), { code: 'ETIMEDOUT' })));
     req.on('error', reject);
-    req.write(body);
-    req.end();
+    req.write(body); req.end();
   });
 }
 function sortByPrice(goods) {
@@ -154,8 +149,8 @@ const JD_API_URL = envFirst('JD_API_URL') || 'https://api.jd.com/routerjson';
 const JD_APP_KEY = envFirst('JD_APP_KEY', 'JD_APPKEY', 'APP_KEY');
 const JD_APP_SECRET = envFirst('JD_APP_SECRET', 'JD_APPSECRET', 'APP_SECRET');
 const JD_ACCESS_TOKEN = envFirst('JD_ACCESS_TOKEN', 'JD_TOKEN');
-const JD_POSITION_ID = envFirst('JD_POSITION_ID', 'JD_POSITIONID') || '3104496027';
-const JD_PID = envFirst('JD_PID') || '2038054117_4104082584_3104496027';
+const JD_POSITION_ID = envFirst('JD_POSITION_ID', 'JD_POSITIONID') || '3104704192';
+const JD_PID = envFirst('JD_PID') || '2038094960_4104288318_3104704192';
 const JD_SITE_ID = envFirst('JD_SITE_ID', 'JD_SITEID') || (JD_PID.split('_')[1] || '');
 const JD_SEARCH_METHOD = envFirst('JD_SEARCH_METHOD') || 'jd.union.open.goods.query';
 const JD_PROMOTION_METHOD = envFirst('JD_PROMOTION_METHOD') || 'jd.union.open.promotion.common.get';
@@ -181,12 +176,23 @@ function normalizeJd(item, source = 'jd.union.open.goods.query') {
 }
 async function searchJd(q) {
   const raw = await jdRequest(JD_SEARCH_METHOD, { goodsReq: { keyword: q, pageIndex: 1, pageSize: 20 } });
-  if (raw.error || raw.error_response) return { ok: false, platform: 'jd', keyword: q, total_count: 0, goods_list: [], raw };
+  if (raw.error || raw.error_response) {
+    return { ok: false, platform: 'jd', keyword: q, total_count: 0, goods_list: [],
+      error: (raw.error_response && (raw.error_response.zh_desc || raw.error_response.en_desc)) || raw.error, raw };
+  }
   const resultText = raw.jd_union_open_goods_query_response && raw.jd_union_open_goods_query_response.result;
-  const parsed = parseJsonMaybe(resultText) || raw;
-  const list = findDeep(parsed, x => x && (x.skuId || x.skuName || x.goodsName)).slice(0, 20);
-  const goods = list.map(x => normalizeJd(x));
-  return { ok: true, platform: 'jd', source: JD_SEARCH_METHOD, keyword: q, total_count: goods.length, goods_list: goods, raw };
+  // JD inner result is a JSON string: { code: 0, data: [...], message: 'SUCCESS' }
+  const parsed = parseJsonMaybe(resultText) || {};
+  if (parsed.code !== undefined && Number(parsed.code) !== 0) {
+    return { ok: false, platform: 'jd', keyword: q, total_count: 0, goods_list: [],
+      error: 'jd_api_error', jd_code: parsed.code, jd_message: parsed.message || '', raw };
+  }
+  // Use parsed.data directly; fall back to deep search for unexpected structures
+  const dataArr = Array.isArray(parsed.data) ? parsed.data
+    : findDeep(parsed || raw, x => x && (x.skuId || x.skuName || x.goodsName)).slice(0, 20);
+  const goods = dataArr.map(x => normalizeJd(x));
+  return { ok: goods.length > 0, platform: 'jd', source: JD_SEARCH_METHOD, keyword: q,
+    total_count: goods.length, goods_list: goods, jd_code: parsed.code, jd_message: parsed.message, raw };
 }
 async function jdLink(body) {
   const skuId = body.sku_id || body.skuId || '';
@@ -196,9 +202,7 @@ async function jdLink(body) {
   function findUrl(v, depth) {
     if (!v || depth > 8) return '';
     if (typeof v === 'string' && /^https?:\/\//.test(v)) return v;
-    if (typeof v === 'object') {
-      for (const val of Object.values(v)) { const u = findUrl(val, depth + 1); if (u) return u; }
-    }
+    if (typeof v === 'object') { for (const val of Object.values(v)) { const u = findUrl(val, depth + 1); if (u) return u; } }
     return '';
   }
   const url = findUrl(raw, 0);
@@ -215,7 +219,6 @@ const TB_PID = envFirst('TB_PID', 'TAOBAO_PID');
 const TB_ENABLED = String(process.env.TB_ENABLED || '').toLowerCase() === 'true';
 const TB_SEARCH_METHOD = envFirst('TB_SEARCH_METHOD') || 'taobao.tbk.dg.material.optional.upgrade';
 const TB_ITEM_METHOD = envFirst('TB_ITEM_METHOD') || 'taobao.tbk.item.info.get';
-// Fix 1: TB_TIMEOUT_MS was previously undefined — caused 502 crash on timeout
 const TB_TIMEOUT_MS = Number(process.env.TB_TIMEOUT_MS || 6500);
 (function normalizeAdzone() { const raw = String(TB_ADZONE_ID || TB_PID || '').trim(); const fromPid = raw.match(/(?:mm_)?\d+_\d+_(\d+)$/); const direct = raw.match(/^\d+$/); if (fromPid) TB_ADZONE_ID = fromPid[1]; else if (direct) TB_ADZONE_ID = raw; })();
 function tbTimestamp() { const d = new Date(Date.now() + 8 * 3600000); const p = n => String(n).padStart(2, '0'); return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`; }
@@ -232,7 +235,6 @@ async function tbRequest(method, biz = {}) {
   }
   return { error: 'tb_request_failed', message: '淘宝接口请求失败', detail: errors };
 }
-// Fix 2: dedup keyed on num_iid + title
 function pickTbItems(raw) {
   const direct = raw && raw.tbk_dg_material_optional_upgrade_response && raw.tbk_dg_material_optional_upgrade_response.result_list && raw.tbk_dg_material_optional_upgrade_response.result_list.map_data;
   if (Array.isArray(direct)) return direct.slice(0, 20);
@@ -244,12 +246,9 @@ function pickTbItems(raw) {
     const numIid = String(x.item_id || b.num_iid || b.item_id || '');
     const titleKey = String(b.title || b.short_title || b.raw_title || x.title || '');
     const key = numIid || titleKey || String(Math.random());
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
+    if (seen.has(key)) return false; seen.add(key); return true;
   }).slice(0, 20);
 }
-// Fix 3: extended URL field list
 function normalizeTb(item, source = 'tb.material.search') {
   const basic = item.item_basic_info || item.basic_info || item;
   const promo = item.price_promotion_info || {};
@@ -260,18 +259,7 @@ function normalizeTb(item, source = 'tb.material.search') {
   const coupon = Array.isArray(promoList) && promoList[0] ? promoList[0] : {};
   const price = Number(promo.final_promotion_price || item.final_promotion_price || basic.zk_final_price || basic.reserve_price || basic.price || 0);
   const couponDiscount = Number(coupon.promotion_fee || 0);
-  const direct = httpsUrl(
-    publish.click_url ||
-    publish.coupon_share_url ||
-    basic.item_url ||
-    item.item_url ||
-    item.detail_url ||
-    basic.detail_url ||
-    item.goods_url ||
-    basic.goods_url ||
-    item.url ||
-    ''
-  );
+  const direct = httpsUrl(publish.click_url || publish.coupon_share_url || basic.item_url || item.item_url || item.detail_url || basic.detail_url || item.goods_url || basic.goods_url || item.url || '');
   const fallback = title ? `https://s.m.taobao.com/h5?q=${encodeURIComponent(title)}` : '';
   const url = direct || fallback;
   return { platform: 'tb', source, goods_name: title, goods_desc: basic.sub_title || title, brand_name: basic.brand_name || '', shop_name: basic.shop_title || basic.nick || '', goods_image_url: httpsUrl(image), goods_thumbnail_url: httpsUrl(image), goods_id: String(item.item_id || basic.num_iid || basic.item_id || ''), num_iid: String(item.item_id || basic.num_iid || basic.item_id || ''), sales_tip: String(basic.annual_vol || basic.tk_total_sales || basic.volume || ''), min_group_price_yuan: price, coupon_discount_yuan: couponDiscount, coupon_price_yuan: price, has_coupon: couponDiscount > 0, unified_tags: ['淘宝', '关键词搜索'], material_url: url, url, item_url: url, direct_buy_url: !!direct, buy_link_status: direct ? 'direct' : 'fallback_search', raw: item };
@@ -342,7 +330,11 @@ async function searchDouyin(q, page = 1, pageSize = 20) {
   const data = douyinPayloadData(raw);
   const products = asArray(data.products || data.product_list || data.list || []);
   const ok = Number(raw.code || 0) === 0;
-  return { ok, platform: 'douyin', source: 'douyin.cps.product.search', keyword: q, total_count: Number(data.total || products.length || 0), goods_list: ok ? products.map(x => normalizeDouyinProduct(x)) : [], raw };
+  return { ok, platform: 'douyin', source: 'douyin.cps.product.search', keyword: q,
+    total_count: Number(data.total || products.length || 0),
+    goods_list: ok ? products.map(x => normalizeDouyinProduct(x)) : [],
+    douyin_code: raw.code, douyin_message: raw.message || raw.desc || '',
+    raw };
 }
 async function douyinLink(body) {
   const productUrl = body.product_url || body.material_url || body.url || body.detail_url || '';
@@ -382,12 +374,35 @@ async function handle(req, res) {
       return sandboxMod.handleSandbox(req, res, url);
     }
     if (url.pathname === '/' || url.pathname === '/health') {
-      const healthBody = { ok: true, name: '价比比 API', runtime: 'server7', pdd_configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID), jd_configured: !!(JD_APP_KEY && JD_APP_SECRET), tb_enabled: TB_ENABLED, tb_configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID), douyin_enabled: DOUYIN_ENABLED, douyin_configured: DOUYIN_CONFIGURED, douyin_secret_present: !!DOUYIN_SECURITY_KEY, provider_status: '/api/providers/status' };
+      const healthBody = { ok: true, name: '价比比 API', runtime: 'server7', version: '7.1',
+        pdd_configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID),
+        jd_configured: !!(JD_APP_KEY && JD_APP_SECRET),
+        tb_enabled: TB_ENABLED, tb_configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID),
+        douyin_enabled: DOUYIN_ENABLED, douyin_configured: DOUYIN_CONFIGURED,
+        douyin_secret_present: !!DOUYIN_SECURITY_KEY, provider_status: '/api/providers/status' };
       if (sandboxMod) Object.assign(healthBody, sandboxMod.sandboxHealthInfo());
       return sendJson(res, 200, healthBody);
     }
     if (url.pathname === '/api/providers/status') return sendJson(res, 200, { ok: true, runtime: 'server7', providers: providerStatus() });
     if (url.pathname === '/api/douyin/self-check') return sendJson(res, 200, douyinSelfCheck());
+
+    // Diagnostic endpoint: returns raw JD + Douyin API responses for debugging
+    if (url.pathname === '/api/diag') {
+      const q = (url.searchParams.get('q') || url.searchParams.get('keyword') || '').trim();
+      if (!q) return sendJson(res, 400, { error: 'missing_keyword', hint: 'add ?q=小米充电宝' });
+      const [jdR, dyR, pddR] = await Promise.allSettled([
+        jdRequest(JD_SEARCH_METHOD, { goodsReq: { keyword: q, pageIndex: 1, pageSize: 3 } }),
+        douyinRequest('/product/search', { page: 1, page_size: 3, title: q }),
+        pddRequest('pdd.ddk.goods.search', { keyword: q, pid: PDD_PID, page: 1, page_size: 3 })
+      ]);
+      return sendJson(res, 200, {
+        ok: true, q, runtime: 'server7',
+        jd: jdR.status === 'fulfilled' ? jdR.value : { fetch_error: String(jdR.reason) },
+        douyin: dyR.status === 'fulfilled' ? dyR.value : { fetch_error: String(dyR.reason) },
+        pdd: pddR.status === 'fulfilled' ? pddR.value : { fetch_error: String(pddR.reason) }
+      });
+    }
+
     const { body, q, platform } = await parseInput(req, url);
     if (url.pathname === '/api/douyin/search') { if (!q) return sendJson(res, 400, { ok: false, platform: 'douyin', error: 'missing_keyword', message: '请加 ?q=关键词' }); return sendJson(res, 200, await searchDouyin(q, Number(url.searchParams.get('page') || body.page || 1), Number(url.searchParams.get('page_size') || body.page_size || 20))); }
     if (url.pathname === '/api/douyin/link') return sendJson(res, 200, await douyinLink({ ...body, product_url: body.product_url || url.searchParams.get('product_url'), product_ext: body.product_ext || url.searchParams.get('product_ext') }));
@@ -418,4 +433,4 @@ async function handle(req, res) {
   }
 }
 
-http.createServer(handle).listen(PORT, () => console.log('Jiabibi server7 listening on', PORT));
+http.createServer(handle).listen(PORT, () => console.log('Jiabibi server7.1 listening on', PORT));
