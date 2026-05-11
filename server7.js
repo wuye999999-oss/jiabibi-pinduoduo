@@ -1,5 +1,5 @@
-// server7.js v7.2
-// Fixes: JD queryResult field, Douyin data JSON sorted keys, merged sign mode, diag PDD page_size
+// server7.js v7.3
+// Fixes: Douyin default sign=secure_key_wrap_merged, JD responce typo, JD positionId in query
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
@@ -40,7 +40,7 @@ function postForm(endpoint, params, timeoutMs = 9000) {
     const body = new URLSearchParams(params).toString();
     let u; try { u = new URL(endpoint); } catch (e) { return reject(e); }
     const cli = u.protocol === 'http:' ? http : https;
-    const req = cli.request({ method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs, headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/7.2' } }, res => {
+    const req = cli.request({ method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs, headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/7.3' } }, res => {
       let data = ''; res.setEncoding('utf8');
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('non_json ' + data.slice(0, 200))); } });
@@ -54,7 +54,7 @@ function postJson(endpoint, payload, timeoutMs = 9000) {
     const body = JSON.stringify(payload || {});
     let u; try { u = new URL(endpoint); } catch (e) { return reject(e); }
     const cli = u.protocol === 'http:' ? http : https;
-    const req = cli.request({ method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs, headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/7.2' } }, res => {
+    const req = cli.request({ method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs, headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/7.3' } }, res => {
       let data = ''; res.setEncoding('utf8');
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('non_json ' + data.slice(0, 200))); } });
@@ -142,12 +142,16 @@ function normalizeJd(item, source = 'jd.union.open.goods.query') {
   return { platform: 'jd', source, goods_name: item.skuName || item.goodsName || item.name || '', goods_desc: item.skuName || '', brand_name: item.brandName || '', shop_name: item.shopName || '', goods_image_url: httpsUrl((images[0] && (images[0].url || images[0].imageUrl)) || item.imageUrl || ''), goods_thumbnail_url: httpsUrl((images[0] && (images[0].url || images[0].imageUrl)) || item.imageUrl || ''), sku_id: skuId, goods_id: skuId, sales_tip: item.comments || item.inOrderCount30Days || '', min_group_price_yuan: price, coupon_discount_yuan: coupon, coupon_price_yuan: Math.max(0, price - coupon) || price, has_coupon: coupon > 0, unified_tags: ['京东'], material_url: url, url, raw: item };
 }
 async function searchJd(q) {
-  const raw = await jdRequest(JD_SEARCH_METHOD, { goodsReq: { keyword: q, pageIndex: 1, pageSize: 20 } });
+  const posId = Number(JD_POSITION_ID) || undefined;
+  const goodsReq = { keyword: q, pageIndex: 1, pageSize: 20 };
+  if (posId) goodsReq.positionId = posId;
+  const raw = await jdRequest(JD_SEARCH_METHOD, { goodsReq });
   if (raw.error || raw.error_response) {
     return { ok: false, platform: 'jd', keyword: q, total_count: 0, goods_list: [],
       error: (raw.error_response && (raw.error_response.zh_desc || raw.error_response.en_desc)) || raw.error, raw };
   }
-  const resp = raw.jd_union_open_goods_query_response || {};
+  // JD API field name has a known typo variant 'responce' in some versions
+  const resp = raw.jd_union_open_goods_query_response || raw.jd_union_open_goods_query_responce || {};
   // JD API returns 'queryResult' (not 'result') in some versions — check both
   const resultText = resp.result || resp.queryResult;
   const parsed = parseJsonMaybe(resultText) || {};
@@ -243,11 +247,11 @@ const DOUYIN_ROLE_ID = envFirst('DOUYIN_ROLE_ID', 'DOUYIN_CPS_ROLE_ID') || DOUYI
 const DOUYIN_SECURITY_KEY = envFirst('DOUYIN_SECURITY_KEY', 'DOUYIN_SECURE_KEY', 'DOUYIN_CPS_SECURITY_KEY', 'DOUYIN_CPS_SECURE_KEY');
 const DOUYIN_ENABLED = String(process.env.DOUYIN_CPS_ENABLED || process.env.DOUYIN_ENABLED || '').toLowerCase() === 'true';
 // DOUYIN_SIGN_MODE options:
-//   secure_key_wrap_sorted  — default: SECRET + sorted(k+v...) + SECRET  (data as JSON string)
-//   secure_key_wrap_merged  — expand data fields into top-level sign (try if default fails)
+//   secure_key_wrap_merged  — expand data sub-fields into top-level sign (default, most compatible)
+//   secure_key_wrap_sorted  — sign data as JSON string at top level
 //   concat_sorted_then_key  — sorted(k+v...) + SECRET
 //   key_then_concat_sorted  — SECRET + sorted(k+v...)
-const DOUYIN_SIGN_MODE = envFirst('DOUYIN_SIGN_MODE') || 'secure_key_wrap_sorted';
+const DOUYIN_SIGN_MODE = envFirst('DOUYIN_SIGN_MODE') || 'secure_key_wrap_merged';
 const DOUYIN_CONFIGURED = !!(DOUYIN_APP_ID && DOUYIN_USER_ID && DOUYIN_ROLE_ID && DOUYIN_SECURITY_KEY);
 function douyinSafeNum(v) { const n = Number(v); return Number.isFinite(n) && String(v).trim() !== '' ? n : String(v || ''); }
 function douyinSelfCheck() {
@@ -256,7 +260,7 @@ function douyinSelfCheck() {
 function douyinSign(params) {
   const SK = DOUYIN_SECURITY_KEY;
   if (DOUYIN_SIGN_MODE === 'secure_key_wrap_merged') {
-    // Expand data sub-fields into top-level sign — tries merging inner + outer fields
+    // Expand data sub-fields into top-level — sign all fields together without the 'data' wrapper
     const parsed = parseJsonMaybe(params.data) || {};
     const merged = { ...params, ...parsed }; delete merged.data; delete merged.sign;
     const keys = Object.keys(merged).filter(k => merged[k] !== undefined && merged[k] !== null).sort();
@@ -265,7 +269,7 @@ function douyinSign(params) {
   const keys = Object.keys(params).filter(k => k !== 'sign' && params[k] !== undefined && params[k] !== null).sort();
   if (DOUYIN_SIGN_MODE === 'concat_sorted_then_key') return md5Upper(keys.map(k => k + params[k]).join('') + SK);
   if (DOUYIN_SIGN_MODE === 'key_then_concat_sorted') return md5Upper(SK + keys.map(k => k + params[k]).join(''));
-  // default: secure_key_wrap_sorted
+  // secure_key_wrap_sorted: sign data as JSON string
   return md5Upper(SK + keys.map(k => k + params[k]).join('') + SK);
 }
 async function douyinRequest(path, data = {}) {
@@ -329,7 +333,7 @@ async function handle(req, res) {
       return sandboxMod.handleSandbox(req, res, url);
     }
     if (url.pathname === '/' || url.pathname === '/health') {
-      const h = { ok: true, name: '价比比 API', runtime: 'server7', version: '7.2', pdd_configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID), jd_configured: !!(JD_APP_KEY && JD_APP_SECRET), tb_enabled: TB_ENABLED, tb_configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID), douyin_enabled: DOUYIN_ENABLED, douyin_configured: DOUYIN_CONFIGURED, provider_status: '/api/providers/status' };
+      const h = { ok: true, name: '价比比 API', runtime: 'server7', version: '7.3', pdd_configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID), jd_configured: !!(JD_APP_KEY && JD_APP_SECRET), tb_enabled: TB_ENABLED, tb_configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID), douyin_enabled: DOUYIN_ENABLED, douyin_configured: DOUYIN_CONFIGURED, provider_status: '/api/providers/status' };
       if (sandboxMod) Object.assign(h, sandboxMod.sandboxHealthInfo());
       return sendJson(res, 200, h);
     }
@@ -340,13 +344,16 @@ async function handle(req, res) {
     if (url.pathname === '/api/diag') {
       const q = (url.searchParams.get('q') || url.searchParams.get('keyword') || '').trim();
       if (!q) return sendJson(res, 400, { error: 'missing_keyword', hint: 'add ?q=小米充电宝' });
+      const posId = Number(JD_POSITION_ID) || undefined;
+      const jdGoodsReq = { keyword: q, pageIndex: 1, pageSize: 10 };
+      if (posId) jdGoodsReq.positionId = posId;
       const [jdR, dyR, pddR] = await Promise.allSettled([
-        jdRequest(JD_SEARCH_METHOD, { goodsReq: { keyword: q, pageIndex: 1, pageSize: 10 } }),
+        jdRequest(JD_SEARCH_METHOD, { goodsReq: jdGoodsReq }),
         douyinRequest('/product/search', { page: 1, page_size: 10, title: q }),
         pddRequest('pdd.ddk.goods.search', { keyword: q, pid: PDD_PID, page: 1, page_size: 10 })
       ]);
       return sendJson(res, 200, {
-        ok: true, q, runtime: 'server7', version: '7.2', douyin_sign_mode: DOUYIN_SIGN_MODE,
+        ok: true, q, runtime: 'server7', version: '7.3', douyin_sign_mode: DOUYIN_SIGN_MODE,
         jd: jdR.status === 'fulfilled' ? jdR.value : { fetch_error: String(jdR.reason) },
         douyin: dyR.status === 'fulfilled' ? dyR.value : { fetch_error: String(dyR.reason) },
         pdd: pddR.status === 'fulfilled' ? pddR.value : { fetch_error: String(pddR.reason) }
@@ -383,4 +390,4 @@ async function handle(req, res) {
   }
 }
 
-http.createServer(handle).listen(PORT, () => console.log('Jiabibi server7.2 listening on', PORT));
+http.createServer(handle).listen(PORT, () => console.log('Jiabibi server7.3 listening on', PORT));
