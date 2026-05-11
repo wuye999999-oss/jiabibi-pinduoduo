@@ -1,110 +1,80 @@
-// server7.js: Jiabibi API v7.1
-// Fixes: TB_TIMEOUT_MS, tb dedup, material_url, JD inner-code check, douyin error passthrough, /api/diag
+// server7.js v7.2
+// Fixes: JD queryResult field, Douyin data JSON sorted keys, merged sign mode, diag PDD page_size
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
 
 const sandboxMod = (() => { try { return require('./sandbox/routes'); } catch (_) { return null; } })();
-
 const PORT = process.env.PORT || 3000;
 
 function envFirst(...names) {
-  for (const name of names) {
-    const value = process.env[name];
-    if (value && String(value).trim()) return String(value).trim();
-  }
+  for (const name of names) { const v = process.env[name]; if (v && String(v).trim()) return String(v).trim(); }
   return '';
 }
 function md5Upper(s) { return crypto.createHash('md5').update(String(s), 'utf8').digest('hex').toUpperCase(); }
 function cleanParams(p) {
   const out = {};
-  for (const [k, v] of Object.entries(p || {})) {
-    if (v !== undefined && v !== null && v !== '') out[k] = String(v);
-  }
+  for (const [k, v] of Object.entries(p || {})) { if (v !== undefined && v !== null && v !== '') out[k] = String(v); }
   return out;
 }
 function asArray(v) { return !v ? [] : (Array.isArray(v) ? v : [v]); }
 function yuanFromFen(v) { return Math.round(Number(v || 0)) / 100; }
 function httpsUrl(u) {
-  if (!u) return '';
-  const s = String(u).trim();
-  if (!s) return '';
+  if (!u) return ''; const s = String(u).trim(); if (!s) return '';
   if (/^https?:\/\//i.test(s)) return s;
   return 'https://' + s.replace(/^\/\//, '');
 }
 function sendJson(res, status, body) {
-  res.writeHead(status, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS,DELETE'
-  });
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type, Authorization', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS,DELETE' });
   res.end(JSON.stringify(body, null, 2));
 }
 function readBody(req) {
   return new Promise(resolve => {
     let data = '';
     req.on('data', chunk => { data += chunk; if (data.length > 2_000_000) req.destroy(); });
-    req.on('end', () => resolve(data));
-    req.on('error', () => resolve(''));
+    req.on('end', () => resolve(data)); req.on('error', () => resolve(''));
   });
 }
 function postForm(endpoint, params, timeoutMs = 9000) {
   return new Promise((resolve, reject) => {
     const body = new URLSearchParams(params).toString();
-    let u;
-    try { u = new URL(endpoint); } catch (e) { return reject(e); }
+    let u; try { u = new URL(endpoint); } catch (e) { return reject(e); }
     const cli = u.protocol === 'http:' ? http : https;
-    const req = cli.request({
-      method: 'POST', hostname: u.hostname, path: u.pathname + u.search,
-      port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs,
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/7.1' }
-    }, res => {
+    const req = cli.request({ method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs, headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/7.2' } }, res => {
       let data = ''; res.setEncoding('utf8');
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('non_json ' + data.slice(0, 200))); } });
     });
     req.on('timeout', () => req.destroy(Object.assign(new Error('request_timeout'), { code: 'ETIMEDOUT' })));
-    req.on('error', reject);
-    req.write(body); req.end();
+    req.on('error', reject); req.write(body); req.end();
   });
 }
 function postJson(endpoint, payload, timeoutMs = 9000) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify(payload || {});
-    let u;
-    try { u = new URL(endpoint); } catch (e) { return reject(e); }
+    let u; try { u = new URL(endpoint); } catch (e) { return reject(e); }
     const cli = u.protocol === 'http:' ? http : https;
-    const req = cli.request({
-      method: 'POST', hostname: u.hostname, path: u.pathname + u.search,
-      port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs,
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/7.1' }
-    }, res => {
+    const req = cli.request({ method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs, headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/7.2' } }, res => {
       let data = ''; res.setEncoding('utf8');
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('non_json ' + data.slice(0, 200))); } });
     });
     req.on('timeout', () => req.destroy(Object.assign(new Error('request_timeout'), { code: 'ETIMEDOUT' })));
-    req.on('error', reject);
-    req.write(body); req.end();
+    req.on('error', reject); req.write(body); req.end();
   });
 }
-function sortByPrice(goods) {
-  return (goods || []).slice().sort((a, b) => Number(a.coupon_price_yuan || a.min_group_price_yuan || 0) - Number(b.coupon_price_yuan || b.min_group_price_yuan || 0));
-}
+function sortByPrice(goods) { return (goods || []).slice().sort((a, b) => Number(a.coupon_price_yuan || a.min_group_price_yuan || 0) - Number(b.coupon_price_yuan || b.min_group_price_yuan || 0)); }
 function cheapest(goods) { return sortByPrice(goods).find(x => Number(x.coupon_price_yuan || x.min_group_price_yuan || 0) > 0) || null; }
 function parseJsonMaybe(v) { if (!v) return null; if (typeof v === 'object') return v; try { return JSON.parse(String(v)); } catch { return null; } }
 function findDeep(obj, pred, limit = 5000) {
   const seen = new Set(); const out = [];
-  function walk(v) {
-    if (!v || typeof v !== 'object' || seen.has(v) || out.length >= limit) return;
-    seen.add(v);
-    if (pred(v)) out.push(v);
-    if (Array.isArray(v)) v.forEach(walk); else Object.values(v).forEach(walk);
-  }
+  function walk(v) { if (!v || typeof v !== 'object' || seen.has(v) || out.length >= limit) return; seen.add(v); if (pred(v)) out.push(v); if (Array.isArray(v)) v.forEach(walk); else Object.values(v).forEach(walk); }
   walk(obj); return out;
 }
 function newReqId() { return (crypto.randomUUID ? crypto.randomUUID() : (Date.now() + '-' + Math.random().toString(16).slice(2))); }
+function sortedJson(obj) {
+  const sorted = {}; Object.keys(obj).sort().forEach(k => { sorted[k] = obj[k]; }); return JSON.stringify(sorted);
+}
 
 // ---------- PDD ----------
 const PDD_API_URL = process.env.PDD_API_URL || 'https://gw-api.pinduoduo.com/api/router';
@@ -112,7 +82,7 @@ const PDD_CLIENT_ID = envFirst('PDD_CLIENT_ID', 'PDD_APP_KEY');
 const PDD_CLIENT_SECRET = envFirst('PDD_CLIENT_SECRET', 'PDD_APP_SECRET');
 const PDD_PID = envFirst('PDD_PID');
 const PDD_CUSTOM_PARAMETERS = envFirst('PDD_CUSTOM_PARAMETERS');
-function pddSign(params) { let s = PDD_CLIENT_SECRET; Object.keys(params).sort().forEach(k => { s += k + params[k]; }); return md5Upper(s + PDD_CLIENT_SECRET); }
+function pddSign(p) { let s = PDD_CLIENT_SECRET; Object.keys(p).sort().forEach(k => { s += k + p[k]; }); return md5Upper(s + PDD_CLIENT_SECRET); }
 async function pddRequest(type, biz = {}) {
   if (!PDD_CLIENT_ID || !PDD_CLIENT_SECRET || !PDD_PID) return { error: 'missing_pdd_env' };
   const params = cleanParams({ type, client_id: PDD_CLIENT_ID, timestamp: Math.floor(Date.now() / 1000), data_type: 'JSON', ...biz });
@@ -129,12 +99,10 @@ async function searchPdd(q) {
   const raw = await pddRequest('pdd.ddk.goods.search', { keyword: q, pid: PDD_PID, page: 1, page_size: 20, custom_parameters: PDD_CUSTOM_PARAMETERS });
   if (raw.error || raw.error_response) return { ok: false, platform: 'pdd', keyword: q, total_count: 0, goods_list: [], raw };
   const list = raw.goods_search_response && raw.goods_search_response.goods_list ? asArray(raw.goods_search_response.goods_list) : [];
-  const goods = list.map(x => normalizePdd(x));
-  return { ok: true, platform: 'pdd', source: 'pdd.ddk.goods.search', keyword: q, total_count: goods.length, goods_list: goods, raw };
+  return { ok: true, platform: 'pdd', source: 'pdd.ddk.goods.search', keyword: q, total_count: list.length, goods_list: list.map(x => normalizePdd(x)), raw };
 }
 async function pddLink(body) {
-  const goodsSign = body.goods_sign || body.goodsSign || '';
-  const goodsId = body.goods_id || body.goodsId || '';
+  const goodsSign = body.goods_sign || body.goodsSign || '', goodsId = body.goods_id || body.goodsId || '';
   const biz = { p_id: PDD_PID, generate_short_url: 'true', custom_parameters: PDD_CUSTOM_PARAMETERS };
   if (goodsSign) biz.goods_sign_list = JSON.stringify([goodsSign]); else if (goodsId) biz.goods_id_list = JSON.stringify([Number(goodsId)]); else return { ok: false, platform: 'pdd', error: 'missing_goods_sign_or_id' };
   const raw = await pddRequest('pdd.ddk.goods.promotion.url.generate', biz);
@@ -170,9 +138,8 @@ function normalizeJd(item, source = 'jd.union.open.goods.query') {
   const images = imageInfo.imageList || imageInfo.image_list || [];
   const price = Number(priceInfo.price || priceInfo.lowestPrice || item.price || 0);
   const coupon = Number(couponInfo.discount || 0);
-  const final = Math.max(0, price - coupon);
   const url = skuId ? `https://item.jd.com/${skuId}.html` : '';
-  return { platform: 'jd', source, goods_name: item.skuName || item.goodsName || item.name || '', goods_desc: item.skuName || '', brand_name: item.brandName || '', shop_name: item.shopName || '', goods_image_url: httpsUrl((images[0] && (images[0].url || images[0].imageUrl)) || item.imageUrl || ''), goods_thumbnail_url: httpsUrl((images[0] && (images[0].url || images[0].imageUrl)) || item.imageUrl || ''), sku_id: skuId, goods_id: skuId, sales_tip: item.comments || item.inOrderCount30Days || '', min_group_price_yuan: price, coupon_discount_yuan: coupon, coupon_price_yuan: final || price, has_coupon: coupon > 0, unified_tags: ['京东'], material_url: url, url, raw: item };
+  return { platform: 'jd', source, goods_name: item.skuName || item.goodsName || item.name || '', goods_desc: item.skuName || '', brand_name: item.brandName || '', shop_name: item.shopName || '', goods_image_url: httpsUrl((images[0] && (images[0].url || images[0].imageUrl)) || item.imageUrl || ''), goods_thumbnail_url: httpsUrl((images[0] && (images[0].url || images[0].imageUrl)) || item.imageUrl || ''), sku_id: skuId, goods_id: skuId, sales_tip: item.comments || item.inOrderCount30Days || '', min_group_price_yuan: price, coupon_discount_yuan: coupon, coupon_price_yuan: Math.max(0, price - coupon) || price, has_coupon: coupon > 0, unified_tags: ['京东'], material_url: url, url, raw: item };
 }
 async function searchJd(q) {
   const raw = await jdRequest(JD_SEARCH_METHOD, { goodsReq: { keyword: q, pageIndex: 1, pageSize: 20 } });
@@ -180,14 +147,14 @@ async function searchJd(q) {
     return { ok: false, platform: 'jd', keyword: q, total_count: 0, goods_list: [],
       error: (raw.error_response && (raw.error_response.zh_desc || raw.error_response.en_desc)) || raw.error, raw };
   }
-  const resultText = raw.jd_union_open_goods_query_response && raw.jd_union_open_goods_query_response.result;
-  // JD inner result is a JSON string: { code: 0, data: [...], message: 'SUCCESS' }
+  const resp = raw.jd_union_open_goods_query_response || {};
+  // JD API returns 'queryResult' (not 'result') in some versions — check both
+  const resultText = resp.result || resp.queryResult;
   const parsed = parseJsonMaybe(resultText) || {};
   if (parsed.code !== undefined && Number(parsed.code) !== 0) {
     return { ok: false, platform: 'jd', keyword: q, total_count: 0, goods_list: [],
       error: 'jd_api_error', jd_code: parsed.code, jd_message: parsed.message || '', raw };
   }
-  // Use parsed.data directly; fall back to deep search for unexpected structures
   const dataArr = Array.isArray(parsed.data) ? parsed.data
     : findDeep(parsed || raw, x => x && (x.skuId || x.skuName || x.goodsName)).slice(0, 20);
   const goods = dataArr.map(x => normalizeJd(x));
@@ -200,8 +167,7 @@ async function jdLink(body) {
   if (!materialId) return { ok: false, platform: 'jd', error: 'missing_material_id' };
   const raw = await jdRequest(JD_PROMOTION_METHOD, { promotionCodeReq: cleanParams({ materialId, couponUrl: body.coupon_url || body.couponUrl || '', siteId: JD_SITE_ID, positionId: JD_POSITION_ID }) });
   function findUrl(v, depth) {
-    if (!v || depth > 8) return '';
-    if (typeof v === 'string' && /^https?:\/\//.test(v)) return v;
+    if (!v || depth > 8) return ''; if (typeof v === 'string' && /^https?:\/\//.test(v)) return v;
     if (typeof v === 'object') { for (const val of Object.values(v)) { const u = findUrl(val, depth + 1); if (u) return u; } }
     return '';
   }
@@ -224,8 +190,7 @@ const TB_TIMEOUT_MS = Number(process.env.TB_TIMEOUT_MS || 6500);
 function tbTimestamp() { const d = new Date(Date.now() + 8 * 3600000); const p = n => String(n).padStart(2, '0'); return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`; }
 function tbSign(params) { let s = TB_APP_SECRET; Object.keys(params).sort().forEach(k => { s += k + String(params[k]); }); return md5Upper(s + TB_APP_SECRET); }
 async function tbRequest(method, biz = {}) {
-  if (!TB_ENABLED) return { error: 'tb_disabled', message: 'TB_ENABLED is not true' };
-  if (!TB_APP_KEY || !TB_APP_SECRET) return { error: 'missing_tb_env', message: 'TB_APP_KEY/TB_APP_SECRET missing' };
+  if (!TB_ENABLED) return { error: 'tb_disabled' }; if (!TB_APP_KEY || !TB_APP_SECRET) return { error: 'missing_tb_env' };
   const params = cleanParams({ method, app_key: TB_APP_KEY, timestamp: tbTimestamp(), format: 'json', v: '2.0', sign_method: 'md5', ...biz });
   params.sign = tbSign(params);
   const errors = [];
@@ -233,26 +198,17 @@ async function tbRequest(method, biz = {}) {
     try { const raw = await postForm(endpoint, params, TB_TIMEOUT_MS); raw.__endpoint = endpoint; return raw; }
     catch (e) { errors.push({ endpoint, code: e.code || '', message: e.message || String(e) }); }
   }
-  return { error: 'tb_request_failed', message: '淘宝接口请求失败', detail: errors };
+  return { error: 'tb_request_failed', detail: errors };
 }
 function pickTbItems(raw) {
   const direct = raw && raw.tbk_dg_material_optional_upgrade_response && raw.tbk_dg_material_optional_upgrade_response.result_list && raw.tbk_dg_material_optional_upgrade_response.result_list.map_data;
   if (Array.isArray(direct)) return direct.slice(0, 20);
-  const out = [];
-  findDeep(raw, x => x && (x.item_basic_info || x.price_promotion_info || x.publish_info || x.num_iid || x.item_id || x.title || x.short_title), 1000).forEach(x => out.push(x));
+  const out = []; findDeep(raw, x => x && (x.item_basic_info || x.price_promotion_info || x.publish_info || x.num_iid || x.item_id || x.title || x.short_title), 1000).forEach(x => out.push(x));
   const seen = new Set();
-  return out.filter(x => {
-    const b = x.item_basic_info || x.basic_info || x;
-    const numIid = String(x.item_id || b.num_iid || b.item_id || '');
-    const titleKey = String(b.title || b.short_title || b.raw_title || x.title || '');
-    const key = numIid || titleKey || String(Math.random());
-    if (seen.has(key)) return false; seen.add(key); return true;
-  }).slice(0, 20);
+  return out.filter(x => { const b = x.item_basic_info || x.basic_info || x; const numIid = String(x.item_id || b.num_iid || b.item_id || ''); const titleKey = String(b.title || b.short_title || b.raw_title || x.title || ''); const key = numIid || titleKey || String(Math.random()); if (seen.has(key)) return false; seen.add(key); return true; }).slice(0, 20);
 }
 function normalizeTb(item, source = 'tb.material.search') {
-  const basic = item.item_basic_info || item.basic_info || item;
-  const promo = item.price_promotion_info || {};
-  const publish = item.publish_info || {};
+  const basic = item.item_basic_info || item.basic_info || item; const promo = item.price_promotion_info || {}; const publish = item.publish_info || {};
   const title = basic.title || basic.short_title || basic.raw_title || item.title || '淘宝商品';
   const image = basic.pict_url || basic.pic_url || basic.white_image || item.pict_url || '';
   const promoList = promo.final_promotion_path_list && promo.final_promotion_path_list.final_promotion_path_map_data;
@@ -260,9 +216,8 @@ function normalizeTb(item, source = 'tb.material.search') {
   const price = Number(promo.final_promotion_price || item.final_promotion_price || basic.zk_final_price || basic.reserve_price || basic.price || 0);
   const couponDiscount = Number(coupon.promotion_fee || 0);
   const direct = httpsUrl(publish.click_url || publish.coupon_share_url || basic.item_url || item.item_url || item.detail_url || basic.detail_url || item.goods_url || basic.goods_url || item.url || '');
-  const fallback = title ? `https://s.m.taobao.com/h5?q=${encodeURIComponent(title)}` : '';
-  const url = direct || fallback;
-  return { platform: 'tb', source, goods_name: title, goods_desc: basic.sub_title || title, brand_name: basic.brand_name || '', shop_name: basic.shop_title || basic.nick || '', goods_image_url: httpsUrl(image), goods_thumbnail_url: httpsUrl(image), goods_id: String(item.item_id || basic.num_iid || basic.item_id || ''), num_iid: String(item.item_id || basic.num_iid || basic.item_id || ''), sales_tip: String(basic.annual_vol || basic.tk_total_sales || basic.volume || ''), min_group_price_yuan: price, coupon_discount_yuan: couponDiscount, coupon_price_yuan: price, has_coupon: couponDiscount > 0, unified_tags: ['淘宝', '关键词搜索'], material_url: url, url, item_url: url, direct_buy_url: !!direct, buy_link_status: direct ? 'direct' : 'fallback_search', raw: item };
+  const url = direct || (title ? `https://s.m.taobao.com/h5?q=${encodeURIComponent(title)}` : '');
+  return { platform: 'tb', source, goods_name: title, goods_desc: basic.sub_title || title, brand_name: basic.brand_name || '', shop_name: basic.shop_title || basic.nick || '', goods_image_url: httpsUrl(image), goods_thumbnail_url: httpsUrl(image), goods_id: String(item.item_id || basic.num_iid || basic.item_id || ''), num_iid: String(item.item_id || basic.num_iid || basic.item_id || ''), sales_tip: String(basic.annual_vol || basic.tk_total_sales || basic.volume || ''), min_group_price_yuan: price, coupon_discount_yuan: couponDiscount, coupon_price_yuan: price, has_coupon: couponDiscount > 0, unified_tags: ['淘宝'], material_url: url, url, item_url: url, direct_buy_url: !!direct, buy_link_status: direct ? 'direct' : 'fallback_search', raw: item };
 }
 async function searchTb(q) {
   if (!TB_ENABLED) return { ok: false, platform: 'tb', keyword: q, total_count: 0, goods_list: [], error: 'tb_disabled' };
@@ -273,8 +228,7 @@ async function searchTb(q) {
   return { ok: !failed, platform: 'tb', mode: 'keyword_search', source: 'tb.material.search', keyword: q, total_count: items.length, q, goods_list: items, raw };
 }
 async function tbItem(input) {
-  const id = String(input || '').match(/\d{8,16}/)?.[0] || '';
-  if (!id) return { ok: false, platform: 'tb', error: 'missing_item_id' };
+  const id = String(input || '').match(/\d{8,16}/)?.[0] || ''; if (!id) return { ok: false, platform: 'tb', error: 'missing_item_id' };
   const fields = 'num_iid,title,pict_url,small_images,reserve_price,zk_final_price,user_type,provcity,item_url,nick,seller_id,volume,cat_name,shop_title';
   const raw = await tbRequest(TB_ITEM_METHOD, { fields, num_iids: id, platform: 2 });
   const items = pickTbItems(raw).map(x => normalizeTb(x, 'tb.item.info'));
@@ -288,38 +242,46 @@ const DOUYIN_USER_ID = envFirst('DOUYIN_USER_ID', 'DOUYIN_CPS_USER_ID', 'DOUYIN_
 const DOUYIN_ROLE_ID = envFirst('DOUYIN_ROLE_ID', 'DOUYIN_CPS_ROLE_ID') || DOUYIN_USER_ID;
 const DOUYIN_SECURITY_KEY = envFirst('DOUYIN_SECURITY_KEY', 'DOUYIN_SECURE_KEY', 'DOUYIN_CPS_SECURITY_KEY', 'DOUYIN_CPS_SECURE_KEY');
 const DOUYIN_ENABLED = String(process.env.DOUYIN_CPS_ENABLED || process.env.DOUYIN_ENABLED || '').toLowerCase() === 'true';
+// DOUYIN_SIGN_MODE options:
+//   secure_key_wrap_sorted  — default: SECRET + sorted(k+v...) + SECRET  (data as JSON string)
+//   secure_key_wrap_merged  — expand data fields into top-level sign (try if default fails)
+//   concat_sorted_then_key  — sorted(k+v...) + SECRET
+//   key_then_concat_sorted  — SECRET + sorted(k+v...)
 const DOUYIN_SIGN_MODE = envFirst('DOUYIN_SIGN_MODE') || 'secure_key_wrap_sorted';
 const DOUYIN_CONFIGURED = !!(DOUYIN_APP_ID && DOUYIN_USER_ID && DOUYIN_ROLE_ID && DOUYIN_SECURITY_KEY);
 function douyinSafeNum(v) { const n = Number(v); return Number.isFinite(n) && String(v).trim() !== '' ? n : String(v || ''); }
 function douyinSelfCheck() {
-  return { ok: true, platform: 'douyin', enabled: DOUYIN_ENABLED, configured: DOUYIN_CONFIGURED, api_host: DOUYIN_API_HOST, app_id_present: !!DOUYIN_APP_ID, user_id_present: !!DOUYIN_USER_ID, role_id_present: !!DOUYIN_ROLE_ID, security_key_present: !!DOUYIN_SECURITY_KEY, security_key_masked: DOUYIN_SECURITY_KEY ? DOUYIN_SECURITY_KEY.slice(0, 3) + '***' + DOUYIN_SECURITY_KEY.slice(-3) : '', sign_mode: DOUYIN_SIGN_MODE, no_secret_in_repo: true, required_env: ['DOUYIN_CPS_ENABLED=true', 'DOUYIN_APP_ID', 'DOUYIN_USER_ID', 'DOUYIN_ROLE_ID', 'DOUYIN_SECURITY_KEY'] };
+  return { ok: true, platform: 'douyin', enabled: DOUYIN_ENABLED, configured: DOUYIN_CONFIGURED, api_host: DOUYIN_API_HOST, app_id_present: !!DOUYIN_APP_ID, user_id_present: !!DOUYIN_USER_ID, role_id_present: !!DOUYIN_ROLE_ID, security_key_present: !!DOUYIN_SECURITY_KEY, security_key_masked: DOUYIN_SECURITY_KEY ? DOUYIN_SECURITY_KEY.slice(0, 4) + '***' + DOUYIN_SECURITY_KEY.slice(-4) : '', sign_mode: DOUYIN_SIGN_MODE, no_secret_in_repo: true };
 }
 function douyinSign(params) {
+  const SK = DOUYIN_SECURITY_KEY;
+  if (DOUYIN_SIGN_MODE === 'secure_key_wrap_merged') {
+    // Expand data sub-fields into top-level sign — tries merging inner + outer fields
+    const parsed = parseJsonMaybe(params.data) || {};
+    const merged = { ...params, ...parsed }; delete merged.data; delete merged.sign;
+    const keys = Object.keys(merged).filter(k => merged[k] !== undefined && merged[k] !== null).sort();
+    return md5Upper(SK + keys.map(k => k + merged[k]).join('') + SK);
+  }
   const keys = Object.keys(params).filter(k => k !== 'sign' && params[k] !== undefined && params[k] !== null).sort();
-  let body = '';
-  if (DOUYIN_SIGN_MODE === 'concat_sorted_then_key') body = keys.map(k => k + params[k]).join('') + DOUYIN_SECURITY_KEY;
-  else if (DOUYIN_SIGN_MODE === 'key_then_concat_sorted') body = DOUYIN_SECURITY_KEY + keys.map(k => k + params[k]).join('');
-  else body = DOUYIN_SECURITY_KEY + keys.map(k => k + params[k]).join('') + DOUYIN_SECURITY_KEY;
-  return md5Upper(body);
+  if (DOUYIN_SIGN_MODE === 'concat_sorted_then_key') return md5Upper(keys.map(k => k + params[k]).join('') + SK);
+  if (DOUYIN_SIGN_MODE === 'key_then_concat_sorted') return md5Upper(SK + keys.map(k => k + params[k]).join(''));
+  // default: secure_key_wrap_sorted
+  return md5Upper(SK + keys.map(k => k + params[k]).join('') + SK);
 }
 async function douyinRequest(path, data = {}) {
   if (!DOUYIN_ENABLED) return { code: -1, desc: 'douyin_disabled', data: null };
   if (!DOUYIN_CONFIGURED) return { code: -1, desc: 'missing_douyin_env', data: douyinSelfCheck() };
   const dataObj = { user_id: douyinSafeNum(DOUYIN_USER_ID), role_id: douyinSafeNum(DOUYIN_ROLE_ID), ...data };
-  const payload = { app_id: String(DOUYIN_APP_ID), timestamp: Math.floor(Date.now() / 1000), version: '1', sign_type: 'MD5', req_id: newReqId(), data: JSON.stringify(dataObj) };
+  // Sort data JSON keys so sign is deterministic regardless of insertion order
+  const payload = { app_id: String(DOUYIN_APP_ID), timestamp: Math.floor(Date.now() / 1000), version: '1', sign_type: 'MD5', req_id: newReqId(), data: sortedJson(dataObj) };
   payload.sign = douyinSign(payload);
   const raw = await postJson(DOUYIN_API_HOST + path, payload, 9000);
-  raw.__request_meta = { path, req_id: payload.req_id, signed: true, data_keys: Object.keys(dataObj), secret_sent_to_client: false };
+  raw.__request_meta = { path, req_id: payload.req_id, sign_mode: DOUYIN_SIGN_MODE, data_keys: Object.keys(dataObj), secret_sent_to_client: false };
   return raw;
 }
-function douyinPayloadData(raw) {
-  const d = raw && raw.data;
-  if (!d) return {};
-  return typeof d === 'string' ? (parseJsonMaybe(d) || {}) : d;
-}
+function douyinPayloadData(raw) { const d = raw && raw.data; if (!d) return {}; return typeof d === 'string' ? (parseJsonMaybe(d) || {}) : d; }
 function normalizeDouyinProduct(p, source = 'douyin.cps.product.search') {
-  const priceFen = Number(p.coupon_price || p.price || 0);
-  const normalFen = Number(p.price || p.coupon_price || 0);
+  const priceFen = Number(p.coupon_price || p.price || 0), normalFen = Number(p.price || p.coupon_price || 0);
   const image = p.cover || p.image || (Array.isArray(p.imgs) ? p.imgs[0] : '') || '';
   const url = p.public_plan_detail_url || p.detail_url || p.product_url || '';
   return { platform: 'douyin', source, goods_name: p.title || p.product_name || '抖音商品', goods_desc: p.title || p.product_name || '', brand_name: p.brand_name || p.brand_name_cn || '', shop_name: p.shop_name || '', goods_image_url: httpsUrl(image), goods_thumbnail_url: httpsUrl(image), goods_id: String(p.product_id || ''), product_id: String(p.product_id || ''), sales_tip: p.sales ? String(p.sales) + '销量' : '', min_group_price_yuan: yuanFromFen(normalFen), coupon_discount_yuan: Math.max(0, yuanFromFen(normalFen) - yuanFromFen(priceFen)), coupon_price_yuan: yuanFromFen(priceFen || normalFen), has_coupon: !!p.coupon_price && Number(p.coupon_price) > 0 && Number(p.coupon_price) < Number(p.price || 0), unified_tags: ['抖音CPS'], material_url: url, url, product_url: url, product_ext: p.ext || p.product_ext || '', commission_ratio: p.cos_ratio || p.public_plan_cos_ratio || 0, commission_fee_yuan: yuanFromFen(p.cos_fee || 0), raw: p };
@@ -330,28 +292,21 @@ async function searchDouyin(q, page = 1, pageSize = 20) {
   const data = douyinPayloadData(raw);
   const products = asArray(data.products || data.product_list || data.list || []);
   const ok = Number(raw.code || 0) === 0;
-  return { ok, platform: 'douyin', source: 'douyin.cps.product.search', keyword: q,
-    total_count: Number(data.total || products.length || 0),
-    goods_list: ok ? products.map(x => normalizeDouyinProduct(x)) : [],
-    douyin_code: raw.code, douyin_message: raw.message || raw.desc || '',
-    raw };
+  return { ok, platform: 'douyin', source: 'douyin.cps.product.search', keyword: q, total_count: Number(data.total || products.length || 0), goods_list: ok ? products.map(x => normalizeDouyinProduct(x)) : [], douyin_code: raw.code, douyin_message: raw.message || raw.desc || '', raw };
 }
 async function douyinLink(body) {
-  const productUrl = body.product_url || body.material_url || body.url || body.detail_url || '';
-  const productExt = body.product_ext || body.ext || '';
-  if (!productUrl) return { ok: false, platform: 'douyin', error: 'missing_product_url', message: 'product_url/material_url/url is required' };
+  const productUrl = body.product_url || body.material_url || body.url || body.detail_url || '', productExt = body.product_ext || body.ext || '';
+  if (!productUrl) return { ok: false, platform: 'douyin', error: 'missing_product_url' };
   const raw = await douyinRequest('/product/link', { product_url: productUrl, product_ext: productExt, external_info: String(body.external_info || 'jiabibi').replace(/[^A-Za-z0-9_]/g, '').slice(0, 40), share_type: body.share_type || [1, 3, 4, 5], platform: Number(body.dy_platform || body.platform || 0), use_coupon: body.use_coupon !== false });
   const data = douyinPayloadData(raw);
-  const coupon = data.coupon_link || {};
-  const publicPlan = data.public_plan_product_link_result_info || {};
+  const coupon = data.coupon_link || {}, publicPlan = data.public_plan_product_link_result_info || {};
   const url = data.dy_deeplink || data.dy_zlink || data.dy_sharelink || coupon.deeplink || coupon.share_link || publicPlan.dy_deeplink || publicPlan.dy_zlink || publicPlan.dy_sharelink || '';
   return { ok: Number(raw.code || 0) === 0 && !!url, platform: 'douyin', url, material_url: url, dy_deeplink: data.dy_deeplink || '', dy_zlink: data.dy_zlink || '', dy_sharelink: data.dy_sharelink || '', dy_password: data.dy_password || coupon.share_command || '', coupon_link: coupon, raw };
 }
 
 async function parseInput(req, url) {
   const rawBody = req.method === 'POST' ? await readBody(req) : '';
-  let body = {};
-  try { body = rawBody ? JSON.parse(rawBody) : {}; } catch { body = {}; }
+  let body = {}; try { body = rawBody ? JSON.parse(rawBody) : {}; } catch { body = {}; }
   const q = String(body.q || body.keyword || url.searchParams.get('q') || url.searchParams.get('keyword') || url.searchParams.get('kw') || '').trim();
   const platform = String(body.platform || body.provider || url.searchParams.get('platform') || url.searchParams.get('provider') || '').trim();
   return { body, q, platform };
@@ -361,7 +316,7 @@ function providerStatus() {
     { platform: 'pdd', name: '拼多多', configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID), search: true, link: true, source: 'pdd.ddk' },
     { platform: 'jd', name: '京东', configured: !!(JD_APP_KEY && JD_APP_SECRET), search: true, link: true, source: 'jd.union' },
     { platform: 'tb', name: '淘宝', configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID), enabled: TB_ENABLED, search: true, link: true, source: 'taobao TOP / alimama' },
-    { platform: 'douyin', name: '抖音', configured: DOUYIN_CONFIGURED, enabled: DOUYIN_ENABLED, search: DOUYIN_ENABLED && DOUYIN_CONFIGURED, link: DOUYIN_ENABLED && DOUYIN_CONFIGURED, source: 'pangolin.ecom.cps', app_id_present: !!DOUYIN_APP_ID, user_id_present: !!DOUYIN_USER_ID, role_id_present: !!DOUYIN_ROLE_ID, security_key_present: !!DOUYIN_SECURITY_KEY, secret_masked: DOUYIN_SECURITY_KEY ? DOUYIN_SECURITY_KEY.slice(0, 3) + '***' + DOUYIN_SECURITY_KEY.slice(-3) : '', notice: DOUYIN_CONFIGURED ? '抖音CPS真实接口已配置' : '抖音CPS环境变量未配置' }
+    { platform: 'douyin', name: '抖音', configured: DOUYIN_CONFIGURED, enabled: DOUYIN_ENABLED, search: DOUYIN_ENABLED && DOUYIN_CONFIGURED, link: DOUYIN_ENABLED && DOUYIN_CONFIGURED, source: 'pangolin.ecom.cps', sign_mode: DOUYIN_SIGN_MODE, app_id_present: !!DOUYIN_APP_ID, security_key_present: !!DOUYIN_SECURITY_KEY }
   ];
 }
 
@@ -370,33 +325,28 @@ async function handle(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   try {
     if (url.pathname.startsWith('/api/sandbox/') || url.pathname === '/api/sandbox/session') {
-      if (!sandboxMod) return sendJson(res, 501, { ok: false, error: 'sandbox_module_not_loaded', hint: 'run npm install then npm run playwright:install' });
+      if (!sandboxMod) return sendJson(res, 501, { ok: false, error: 'sandbox_module_not_loaded' });
       return sandboxMod.handleSandbox(req, res, url);
     }
     if (url.pathname === '/' || url.pathname === '/health') {
-      const healthBody = { ok: true, name: '价比比 API', runtime: 'server7', version: '7.1',
-        pdd_configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID),
-        jd_configured: !!(JD_APP_KEY && JD_APP_SECRET),
-        tb_enabled: TB_ENABLED, tb_configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID),
-        douyin_enabled: DOUYIN_ENABLED, douyin_configured: DOUYIN_CONFIGURED,
-        douyin_secret_present: !!DOUYIN_SECURITY_KEY, provider_status: '/api/providers/status' };
-      if (sandboxMod) Object.assign(healthBody, sandboxMod.sandboxHealthInfo());
-      return sendJson(res, 200, healthBody);
+      const h = { ok: true, name: '价比比 API', runtime: 'server7', version: '7.2', pdd_configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID), jd_configured: !!(JD_APP_KEY && JD_APP_SECRET), tb_enabled: TB_ENABLED, tb_configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID), douyin_enabled: DOUYIN_ENABLED, douyin_configured: DOUYIN_CONFIGURED, provider_status: '/api/providers/status' };
+      if (sandboxMod) Object.assign(h, sandboxMod.sandboxHealthInfo());
+      return sendJson(res, 200, h);
     }
     if (url.pathname === '/api/providers/status') return sendJson(res, 200, { ok: true, runtime: 'server7', providers: providerStatus() });
     if (url.pathname === '/api/douyin/self-check') return sendJson(res, 200, douyinSelfCheck());
 
-    // Diagnostic endpoint: returns raw JD + Douyin API responses for debugging
+    // Diagnostic: returns raw API responses from JD + Douyin + PDD for debugging
     if (url.pathname === '/api/diag') {
       const q = (url.searchParams.get('q') || url.searchParams.get('keyword') || '').trim();
       if (!q) return sendJson(res, 400, { error: 'missing_keyword', hint: 'add ?q=小米充电宝' });
       const [jdR, dyR, pddR] = await Promise.allSettled([
-        jdRequest(JD_SEARCH_METHOD, { goodsReq: { keyword: q, pageIndex: 1, pageSize: 3 } }),
-        douyinRequest('/product/search', { page: 1, page_size: 3, title: q }),
-        pddRequest('pdd.ddk.goods.search', { keyword: q, pid: PDD_PID, page: 1, page_size: 3 })
+        jdRequest(JD_SEARCH_METHOD, { goodsReq: { keyword: q, pageIndex: 1, pageSize: 10 } }),
+        douyinRequest('/product/search', { page: 1, page_size: 10, title: q }),
+        pddRequest('pdd.ddk.goods.search', { keyword: q, pid: PDD_PID, page: 1, page_size: 10 })
       ]);
       return sendJson(res, 200, {
-        ok: true, q, runtime: 'server7',
+        ok: true, q, runtime: 'server7', version: '7.2', douyin_sign_mode: DOUYIN_SIGN_MODE,
         jd: jdR.status === 'fulfilled' ? jdR.value : { fetch_error: String(jdR.reason) },
         douyin: dyR.status === 'fulfilled' ? dyR.value : { fetch_error: String(dyR.reason) },
         pdd: pddR.status === 'fulfilled' ? pddR.value : { fetch_error: String(pddR.reason) }
@@ -404,14 +354,14 @@ async function handle(req, res) {
     }
 
     const { body, q, platform } = await parseInput(req, url);
-    if (url.pathname === '/api/douyin/search') { if (!q) return sendJson(res, 400, { ok: false, platform: 'douyin', error: 'missing_keyword', message: '请加 ?q=关键词' }); return sendJson(res, 200, await searchDouyin(q, Number(url.searchParams.get('page') || body.page || 1), Number(url.searchParams.get('page_size') || body.page_size || 20))); }
+    if (url.pathname === '/api/douyin/search') { if (!q) return sendJson(res, 400, { ok: false, platform: 'douyin', error: 'missing_keyword' }); return sendJson(res, 200, await searchDouyin(q, Number(url.searchParams.get('page') || body.page || 1), Number(url.searchParams.get('page_size') || body.page_size || 20))); }
     if (url.pathname === '/api/douyin/link') return sendJson(res, 200, await douyinLink({ ...body, product_url: body.product_url || url.searchParams.get('product_url'), product_ext: body.product_ext || url.searchParams.get('product_ext') }));
-    if (url.pathname === '/api/tb/search' || url.pathname === '/api/tb/real-search') { if (!q) return sendJson(res, 400, { ok: false, platform: 'tb', error: 'missing_keyword', message: '请加 ?q=关键词' }); return sendJson(res, 200, await searchTb(q)); }
+    if (url.pathname === '/api/tb/search' || url.pathname === '/api/tb/real-search') { if (!q) return sendJson(res, 400, { ok: false, platform: 'tb', error: 'missing_keyword' }); return sendJson(res, 200, await searchTb(q)); }
     if (url.pathname === '/api/tb/item' || url.pathname === '/api/tb/link') { const input = body.item_id || body.num_iid || body.id || body.url || body.material_url || url.searchParams.get('item_id') || url.searchParams.get('num_iid') || url.searchParams.get('id') || url.searchParams.get('url') || ''; return sendJson(res, 200, await tbItem(input)); }
     if (url.pathname === '/api/pdd/link') return sendJson(res, 200, await pddLink({ ...body, goods_sign: body.goods_sign || url.searchParams.get('goods_sign'), goods_id: body.goods_id || url.searchParams.get('goods_id') }));
     if (url.pathname === '/api/jd/link') return sendJson(res, 200, await jdLink({ ...body, sku_id: body.sku_id || url.searchParams.get('sku_id'), material_url: body.material_url || url.searchParams.get('material_url') }));
     if (url.pathname === '/api/search' || url.pathname === '/api/search.json' || url.pathname === '/api/provider/search') {
-      if (!q) return sendJson(res, 400, { ok: false, error: 'missing_keyword', message: '请加 ?q=关键词' });
+      if (!q) return sendJson(res, 400, { ok: false, error: 'missing_keyword' });
       let result;
       if (platform === 'tb') result = await searchTb(q);
       else if (platform === 'pdd') result = await searchPdd(q);
@@ -433,4 +383,4 @@ async function handle(req, res) {
   }
 }
 
-http.createServer(handle).listen(PORT, () => console.log('Jiabibi server7.1 listening on', PORT));
+http.createServer(handle).listen(PORT, () => console.log('Jiabibi server7.2 listening on', PORT));
