@@ -1,4 +1,4 @@
-// server7.js v7.6
+// server7.js v7.7
 // Try Douyin value-only sign (no key names) — SK+appid+data+ts+SK
 const http = require('http');
 const https = require('https');
@@ -40,7 +40,7 @@ function postForm(endpoint, params, timeoutMs = 9000) {
     const body = new URLSearchParams(params).toString();
     let u; try { u = new URL(endpoint); } catch (e) { return reject(e); }
     const cli = u.protocol === 'http:' ? http : https;
-    const req = cli.request({ method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs, headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/7.6' } }, res => {
+    const req = cli.request({ method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs, headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/7.7' } }, res => {
       let data = ''; res.setEncoding('utf8');
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('non_json ' + data.slice(0, 200))); } });
@@ -54,7 +54,7 @@ function postJson(endpoint, payload, timeoutMs = 9000) {
     const body = JSON.stringify(payload || {});
     let u; try { u = new URL(endpoint); } catch (e) { return reject(e); }
     const cli = u.protocol === 'http:' ? http : https;
-    const req = cli.request({ method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs, headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/7.6' } }, res => {
+    const req = cli.request({ method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs, headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/7.7' } }, res => {
       let data = ''; res.setEncoding('utf8');
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('non_json ' + data.slice(0, 200))); } });
@@ -386,7 +386,7 @@ async function handle(req, res) {
       return sandboxMod.handleSandbox(req, res, url);
     }
     if (url.pathname === '/' || url.pathname === '/health') {
-      const h = { ok: true, name: '价比比 API', runtime: 'server7', version: '7.6', pdd_configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID), jd_configured: !!(JD_APP_KEY && JD_APP_SECRET), tb_enabled: TB_ENABLED, tb_configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID), douyin_enabled: DOUYIN_ENABLED, douyin_configured: DOUYIN_CONFIGURED, provider_status: '/api/providers/status' };
+      const h = { ok: true, name: '价比比 API', runtime: 'server7', version: '7.7', pdd_configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID), jd_configured: !!(JD_APP_KEY && JD_APP_SECRET), tb_enabled: TB_ENABLED, tb_configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID), douyin_enabled: DOUYIN_ENABLED, douyin_configured: DOUYIN_CONFIGURED, provider_status: '/api/providers/status', douyin_debug: '/api/douyin/debug?q=小米充电宝', compare_api: '/api/compare?q=小米充电宝' };
       if (sandboxMod) Object.assign(h, sandboxMod.sandboxHealthInfo());
       return sendJson(res, 200, h);
     }
@@ -405,7 +405,7 @@ async function handle(req, res) {
         pddRequest('pdd.ddk.goods.search', { keyword: q, pid: PDD_PID, page: 1, page_size: 10 })
       ]);
       return sendJson(res, 200, {
-        ok: true, q, runtime: 'server7', version: '7.6', douyin_sign_mode: DOUYIN_SIGN_MODE,
+        ok: true, q, runtime: 'server7', version: '7.7', douyin_sign_mode: DOUYIN_SIGN_MODE,
         jd: jdR.status === 'fulfilled' ? jdR.value : { fetch_error: String(jdR.reason) },
         douyin: dyR.status === 'fulfilled' ? dyR.value : { fetch_error: String(dyR.reason) },
         pdd: pddR.status === 'fulfilled' ? { total_count: (pddR.value.goods_search_response || {}).total_count, goods_count: ((pddR.value.goods_search_response || {}).goods_list || []).length, ok: true } : { fetch_error: String(pddR.reason) }
@@ -413,6 +413,55 @@ async function handle(req, res) {
     }
 
     const { body, q, platform } = await parseInput(req, url);
+    if (url.pathname === '/api/douyin/debug') {
+      if (!q) return sendJson(res, 400, { ok: false, platform: 'douyin', error: 'missing_keyword' });
+      const result = await searchDouyin(q);
+      return sendJson(res, 200, {
+        ok: true,
+        runtime: 'server7',
+        q,
+        self_check: douyinSelfCheck(),
+        result_ok: result.ok,
+        code: result.raw?.code,
+        desc: result.raw?.desc || result.raw?.message,
+        goods_count: result.goods_list?.length || 0,
+        goods_preview: (result.goods_list || []).slice(0, 3),
+        raw: result.raw
+      });
+    }
+    if (url.pathname === '/api/compare') {
+      if (!q) return sendJson(res, 400, { ok: false, error: 'missing_keyword' });
+      const providerErrors = {};
+      const runProvider = async (name, fn) => {
+        try { return await fn(q); }
+        catch (e) {
+          providerErrors[name] = e.message || String(e);
+          return { ok: false, platform: name, keyword: q, total_count: 0, goods_list: [], error: providerErrors[name] };
+        }
+      };
+      const [pdd, jd, tb, douyin] = await Promise.all([
+        runProvider('pdd', searchPdd),
+        runProvider('jd', searchJd),
+        runProvider('tb', searchTb),
+        runProvider('douyin', searchDouyin)
+      ]);
+      const providers = { pdd, jd, tb, douyin };
+      const counts = {
+        pdd: pdd.goods_list?.length || 0,
+        jd: jd.goods_list?.length || 0,
+        tb: tb.goods_list?.length || 0,
+        douyin: douyin.goods_list?.length || 0
+      };
+      return sendJson(res, 200, {
+        ok: true,
+        runtime: 'server7',
+        q,
+        counts,
+        provider_errors: providerErrors,
+        providers,
+        goods_list: [...(pdd.goods_list || []), ...(jd.goods_list || []), ...(tb.goods_list || []), ...(douyin.goods_list || [])]
+      });
+    }
     if (url.pathname === '/api/douyin/search') { if (!q) return sendJson(res, 400, { ok: false, platform: 'douyin', error: 'missing_keyword' }); return sendJson(res, 200, await searchDouyin(q, Number(url.searchParams.get('page') || body.page || 1), Number(url.searchParams.get('page_size') || body.page_size || 20))); }
     if (url.pathname === '/api/douyin/link') return sendJson(res, 200, await douyinLink({ ...body, product_url: body.product_url || url.searchParams.get('product_url'), product_ext: body.product_ext || url.searchParams.get('product_ext') }));
     if (url.pathname === '/api/tb/search' || url.pathname === '/api/tb/real-search') { if (!q) return sendJson(res, 400, { ok: false, platform: 'tb', error: 'missing_keyword' }); return sendJson(res, 200, await searchTb(q)); }
@@ -442,4 +491,4 @@ async function handle(req, res) {
   }
 }
 
-http.createServer(handle).listen(PORT, () => console.log('Jiabibi server7.6 listening on', PORT));
+http.createServer(handle).listen(PORT, () => console.log('Jiabibi server7.7 listening on', PORT));
