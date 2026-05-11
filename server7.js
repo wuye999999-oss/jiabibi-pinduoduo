@@ -1,5 +1,5 @@
-// server7.js v7.5
-// Try Douyin sign modes that exclude metadata fields (req_id, sign_type, version)
+// server7.js v7.6
+// Try Douyin value-only sign (no key names) — SK+appid+data+ts+SK
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
@@ -40,7 +40,7 @@ function postForm(endpoint, params, timeoutMs = 9000) {
     const body = new URLSearchParams(params).toString();
     let u; try { u = new URL(endpoint); } catch (e) { return reject(e); }
     const cli = u.protocol === 'http:' ? http : https;
-    const req = cli.request({ method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs, headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/7.5' } }, res => {
+    const req = cli.request({ method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs, headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/7.6' } }, res => {
       let data = ''; res.setEncoding('utf8');
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('non_json ' + data.slice(0, 200))); } });
@@ -54,7 +54,7 @@ function postJson(endpoint, payload, timeoutMs = 9000) {
     const body = JSON.stringify(payload || {});
     let u; try { u = new URL(endpoint); } catch (e) { return reject(e); }
     const cli = u.protocol === 'http:' ? http : https;
-    const req = cli.request({ method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs, headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/7.5' } }, res => {
+    const req = cli.request({ method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs, headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/7.6' } }, res => {
       let data = ''; res.setEncoding('utf8');
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('non_json ' + data.slice(0, 200))); } });
@@ -244,16 +244,15 @@ const DOUYIN_USER_ID = envFirst('DOUYIN_USER_ID', 'DOUYIN_CPS_USER_ID', 'DOUYIN_
 const DOUYIN_ROLE_ID = envFirst('DOUYIN_ROLE_ID', 'DOUYIN_CPS_ROLE_ID') || DOUYIN_USER_ID;
 const DOUYIN_SECURITY_KEY = envFirst('DOUYIN_SECURITY_KEY', 'DOUYIN_SECURE_KEY', 'DOUYIN_CPS_SECURITY_KEY', 'DOUYIN_CPS_SECURE_KEY');
 const DOUYIN_ENABLED = String(process.env.DOUYIN_CPS_ENABLED || process.env.DOUYIN_ENABLED || '').toLowerCase() === 'true';
-// DOUYIN_SIGN_MODE options (set via Render env var DOUYIN_SIGN_MODE):
-//   merged_no_reqid      — DEFAULT: expand data fields, skip req_id from sign
-//   merged               — expand data fields, include all top-level fields in sign
-//   sorted               — data as JSON string, all top-level fields
-//   sorted_no_reqid      — data as JSON string, skip req_id
-//   merged_minimal       — expand data + app_id + timestamp only (no req_id/version/sign_type)
-//   sorted_minimal       — data JSON + app_id + timestamp only
-//   concat_sorted_then_key  — kv_sorted + SK (no SK prefix)
-//   key_then_concat_sorted  — SK + kv_sorted (no SK suffix)
-const DOUYIN_SIGN_MODE = envFirst('DOUYIN_SIGN_MODE') || 'merged_no_reqid';
+// DOUYIN_SIGN_MODE (set via Render env var):
+//   values_wrap      — DEFAULT: SK + app_id_val + data_json + timestamp_val + SK  (values only, no key names)
+//   values_suffix    — app_id_val + data_json + timestamp_val + SK
+//   values_prefix    — SK + app_id_val + data_json + timestamp_val
+//   merged_minimal   — SK + sorted(key+val for app_id/ts/data-fields) + SK
+//   merged_no_reqid  — SK + sorted(key+val, all except req_id) + SK
+//   merged           — SK + sorted(key+val, all fields expanded) + SK
+//   sorted           — SK + sorted(key+val, data as JSON string) + SK
+const DOUYIN_SIGN_MODE = envFirst('DOUYIN_SIGN_MODE') || 'values_wrap';
 const DOUYIN_CONFIGURED = !!(DOUYIN_APP_ID && DOUYIN_USER_ID && DOUYIN_ROLE_ID && DOUYIN_SECURITY_KEY);
 function douyinSafeNum(v) { const n = Number(v); return Number.isFinite(n) && String(v).trim() !== '' ? n : String(v || ''); }
 function douyinSelfCheck() {
@@ -263,8 +262,25 @@ function douyinSelfCheck() {
 function douyinSignWithDebug(params) {
   const SK = DOUYIN_SECURITY_KEY;
   const maskSk = SK ? SK.slice(0, 4) + '****' + SK.slice(-4) : '(no_sk)';
+  const dataJson = params.data || '';
+  const appId = String(params.app_id || '');
+  const ts = String(params.timestamp || '');
 
-  // Helper: build merged object from top-level + expanded data fields
+  // Value-only modes: no key names in sign string
+  if (DOUYIN_SIGN_MODE === 'values_wrap') {
+    const inner = appId + dataJson + ts;
+    return { sign: md5Upper(SK + inner + SK), debug: { mode: DOUYIN_SIGN_MODE, input_masked: maskSk + inner + maskSk } };
+  }
+  if (DOUYIN_SIGN_MODE === 'values_suffix') {
+    const inner = appId + dataJson + ts;
+    return { sign: md5Upper(inner + SK), debug: { mode: DOUYIN_SIGN_MODE, input_masked: inner + maskSk } };
+  }
+  if (DOUYIN_SIGN_MODE === 'values_prefix') {
+    const inner = appId + dataJson + ts;
+    return { sign: md5Upper(SK + inner), debug: { mode: DOUYIN_SIGN_MODE, input_masked: maskSk + inner } };
+  }
+
+  // Key-value modes (from v7.5)
   function getMerged(excludeKeys = []) {
     const parsed = parseJsonMaybe(params.data) || {};
     const merged = { ...params, ...parsed };
@@ -272,57 +288,41 @@ function douyinSignWithDebug(params) {
     for (const k of excludeKeys) delete merged[k];
     return merged;
   }
-  // Helper: build sorted kv from top-level params
   function getSorted(excludeKeys = []) {
-    const p = { ...params };
-    delete p.sign;
+    const p = { ...params }; delete p.sign;
     for (const k of excludeKeys) delete p[k];
     return p;
   }
-  function buildSign(obj, mode) {
+  function buildKV(obj, skMode) {
     const keys = Object.keys(obj).filter(k => obj[k] !== undefined && obj[k] !== null).sort();
     const inner = keys.map(k => k + obj[k]).join('');
     let sign;
-    if (mode === 'suffix_only') sign = md5Upper(inner + SK);
-    else if (mode === 'prefix_only') sign = md5Upper(SK + inner);
-    else sign = md5Upper(SK + inner + SK); // default: wrap
-    return { sign, keys_signed: keys, input_masked: (mode === 'suffix_only' ? '' : maskSk) + inner + (mode === 'prefix_only' ? '' : maskSk) };
+    if (skMode === 'suffix') sign = md5Upper(inner + SK);
+    else if (skMode === 'prefix') sign = md5Upper(SK + inner);
+    else sign = md5Upper(SK + inner + SK);
+    return { sign, keys_signed: keys, input_masked: (skMode === 'suffix' ? '' : maskSk) + inner + (skMode === 'prefix' ? '' : maskSk) };
   }
-
+  if (DOUYIN_SIGN_MODE === 'merged_minimal') {
+    const parsed = parseJsonMaybe(params.data) || {};
+    const obj = { ...parsed, app_id: params.app_id, timestamp: params.timestamp };
+    const { sign, keys_signed, input_masked } = buildKV(obj, 'wrap');
+    return { sign, debug: { mode: DOUYIN_SIGN_MODE, keys_signed, input_masked } };
+  }
   if (DOUYIN_SIGN_MODE === 'merged_no_reqid') {
-    const { sign, keys_signed, input_masked } = buildSign(getMerged(['req_id']), 'wrap');
+    const { sign, keys_signed, input_masked } = buildKV(getMerged(['req_id']), 'wrap');
     return { sign, debug: { mode: DOUYIN_SIGN_MODE, keys_signed, input_masked } };
   }
   if (DOUYIN_SIGN_MODE === 'merged') {
-    const { sign, keys_signed, input_masked } = buildSign(getMerged(), 'wrap');
-    return { sign, debug: { mode: DOUYIN_SIGN_MODE, keys_signed, input_masked } };
-  }
-  if (DOUYIN_SIGN_MODE === 'merged_minimal') {
-    // Only app_id + timestamp + expanded data fields — no req_id, version, sign_type
-    const parsed = parseJsonMaybe(params.data) || {};
-    const obj = { ...parsed, app_id: params.app_id, timestamp: params.timestamp };
-    const { sign, keys_signed, input_masked } = buildSign(obj, 'wrap');
+    const { sign, keys_signed, input_masked } = buildKV(getMerged(), 'wrap');
     return { sign, debug: { mode: DOUYIN_SIGN_MODE, keys_signed, input_masked } };
   }
   if (DOUYIN_SIGN_MODE === 'sorted_no_reqid') {
-    const { sign, keys_signed, input_masked } = buildSign(getSorted(['req_id']), 'wrap');
+    const { sign, keys_signed, input_masked } = buildKV(getSorted(['req_id']), 'wrap');
     return { sign, debug: { mode: DOUYIN_SIGN_MODE, keys_signed, input_masked } };
   }
-  if (DOUYIN_SIGN_MODE === 'sorted_minimal') {
-    const { sign, keys_signed, input_masked } = buildSign(getSorted(['req_id', 'sign_type', 'version']), 'wrap');
-    return { sign, debug: { mode: DOUYIN_SIGN_MODE, keys_signed, input_masked } };
-  }
-  if (DOUYIN_SIGN_MODE === 'concat_sorted_then_key') {
-    const { sign, keys_signed, input_masked } = buildSign(getSorted(), 'suffix_only');
-    return { sign, debug: { mode: DOUYIN_SIGN_MODE, keys_signed, input_masked } };
-  }
-  if (DOUYIN_SIGN_MODE === 'key_then_concat_sorted') {
-    const { sign, keys_signed, input_masked } = buildSign(getSorted(), 'prefix_only');
-    return { sign, debug: { mode: DOUYIN_SIGN_MODE, keys_signed, input_masked } };
-  }
-  // fallback: original secure_key_wrap_sorted
-  const { sign, keys_signed, input_masked } = buildSign(getSorted(), 'wrap');
-  return { sign, debug: { mode: 'secure_key_wrap_sorted_fallback', keys_signed, input_masked } };
+  // fallback: sorted with all fields
+  const { sign, keys_signed, input_masked } = buildKV(getSorted(), 'wrap');
+  return { sign, debug: { mode: 'sorted_fallback', keys_signed, input_masked } };
 }
 
 async function douyinRequest(path, data = {}) {
@@ -333,7 +333,7 @@ async function douyinRequest(path, data = {}) {
   const { sign, debug: signDebug } = douyinSignWithDebug(payload);
   payload.sign = sign;
   const raw = await postJson(DOUYIN_API_HOST + path, payload, 9000);
-  raw.__request_meta = { path, req_id: payload.req_id, sign_mode: DOUYIN_SIGN_MODE, data_keys: Object.keys(dataObj), secret_sent_to_client: false, sign_debug: signDebug };
+  raw.__request_meta = { path, sign_mode: DOUYIN_SIGN_MODE, secret_sent_to_client: false, sign_debug: signDebug };
   return raw;
 }
 function douyinPayloadData(raw) { const d = raw && raw.data; if (!d) return {}; return typeof d === 'string' ? (parseJsonMaybe(d) || {}) : d; }
@@ -386,7 +386,7 @@ async function handle(req, res) {
       return sandboxMod.handleSandbox(req, res, url);
     }
     if (url.pathname === '/' || url.pathname === '/health') {
-      const h = { ok: true, name: '价比比 API', runtime: 'server7', version: '7.5', pdd_configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID), jd_configured: !!(JD_APP_KEY && JD_APP_SECRET), tb_enabled: TB_ENABLED, tb_configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID), douyin_enabled: DOUYIN_ENABLED, douyin_configured: DOUYIN_CONFIGURED, provider_status: '/api/providers/status' };
+      const h = { ok: true, name: '价比比 API', runtime: 'server7', version: '7.6', pdd_configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID), jd_configured: !!(JD_APP_KEY && JD_APP_SECRET), tb_enabled: TB_ENABLED, tb_configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID), douyin_enabled: DOUYIN_ENABLED, douyin_configured: DOUYIN_CONFIGURED, provider_status: '/api/providers/status' };
       if (sandboxMod) Object.assign(h, sandboxMod.sandboxHealthInfo());
       return sendJson(res, 200, h);
     }
@@ -405,7 +405,7 @@ async function handle(req, res) {
         pddRequest('pdd.ddk.goods.search', { keyword: q, pid: PDD_PID, page: 1, page_size: 10 })
       ]);
       return sendJson(res, 200, {
-        ok: true, q, runtime: 'server7', version: '7.5', douyin_sign_mode: DOUYIN_SIGN_MODE,
+        ok: true, q, runtime: 'server7', version: '7.6', douyin_sign_mode: DOUYIN_SIGN_MODE,
         jd: jdR.status === 'fulfilled' ? jdR.value : { fetch_error: String(jdR.reason) },
         douyin: dyR.status === 'fulfilled' ? dyR.value : { fetch_error: String(dyR.reason) },
         pdd: pddR.status === 'fulfilled' ? { total_count: (pddR.value.goods_search_response || {}).total_count, goods_count: ((pddR.value.goods_search_response || {}).goods_list || []).length, ok: true } : { fetch_error: String(pddR.reason) }
@@ -442,4 +442,4 @@ async function handle(req, res) {
   }
 }
 
-http.createServer(handle).listen(PORT, () => console.log('Jiabibi server7.5 listening on', PORT));
+http.createServer(handle).listen(PORT, () => console.log('Jiabibi server7.6 listening on', PORT));
