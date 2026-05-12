@@ -9,6 +9,16 @@ const ALLOWED_DOMAINS = [
 
 const SENSITIVE_RE = /\b(cookie|set-cookie|authorization|token|password|secret|passwd|credential|access_token|refresh_token|x-auth|app_secret|client_secret|sk-)\b/i;
 
+const PII_PHONE_RE = /1[3-9]\d{9}/g;
+const PII_ID_CARD_RE = /\d{17}[\dXx]/g;
+
+function sanitizePii(str) {
+  if (typeof str !== 'string') return str;
+  return str
+    .replace(PII_PHONE_RE, '[手机号]')
+    .replace(PII_ID_CARD_RE, '[证件号]');
+}
+
 function sanitizeForLog(obj, depth = 0) {
   if (depth > 6) return '[deep]';
   if (!obj || typeof obj !== 'object') return obj;
@@ -19,6 +29,13 @@ function sanitizeForLog(obj, depth = 0) {
     else if (typeof v === 'string' && v.length > 800) out[k] = v.slice(0, 80) + '...[truncated]';
     else out[k] = sanitizeForLog(v, depth + 1);
   }
+  return out;
+}
+
+function sanitizeActionForLog(action) {
+  if (!action || typeof action !== 'object') return action;
+  const out = { ...action };
+  if (out.type === 'type' && out.text !== undefined) out.text = '[REDACTED]';
   return out;
 }
 
@@ -57,7 +74,8 @@ function validateAction(action) {
 
 function safePublicResult(item) {
   const { raw, _original, ...rest } = item;
+  if (rest.rawVisibleText) rest.rawVisibleText = sanitizePii(rest.rawVisibleText);
   return rest;
 }
 
-module.exports = { sanitizeForLog, validateNavigateUrl, validateAction, safePublicResult, isAllowedDomain, ALLOWED_DOMAINS };
+module.exports = { sanitizePii, sanitizeForLog, sanitizeActionForLog, validateNavigateUrl, validateAction, safePublicResult, isAllowedDomain, ALLOWED_DOMAINS };
