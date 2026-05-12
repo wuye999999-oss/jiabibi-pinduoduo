@@ -1,4 +1,4 @@
-// server7.js v7.6
+// server7.js v7.8
 // Try Douyin value-only sign (no key names) — SK+appid+data+ts+SK
 const http = require('http');
 const https = require('https');
@@ -40,7 +40,7 @@ function postForm(endpoint, params, timeoutMs = 9000) {
     const body = new URLSearchParams(params).toString();
     let u; try { u = new URL(endpoint); } catch (e) { return reject(e); }
     const cli = u.protocol === 'http:' ? http : https;
-    const req = cli.request({ method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs, headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/7.6' } }, res => {
+    const req = cli.request({ method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs, headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/7.8' } }, res => {
       let data = ''; res.setEncoding('utf8');
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('non_json ' + data.slice(0, 200))); } });
@@ -54,7 +54,7 @@ function postJson(endpoint, payload, timeoutMs = 9000) {
     const body = JSON.stringify(payload || {});
     let u; try { u = new URL(endpoint); } catch (e) { return reject(e); }
     const cli = u.protocol === 'http:' ? http : https;
-    const req = cli.request({ method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs, headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/7.6' } }, res => {
+    const req = cli.request({ method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs, headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/7.8' } }, res => {
       let data = ''; res.setEncoding('utf8');
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('non_json ' + data.slice(0, 200))); } });
@@ -245,14 +245,15 @@ const DOUYIN_ROLE_ID = envFirst('DOUYIN_ROLE_ID', 'DOUYIN_CPS_ROLE_ID') || DOUYI
 const DOUYIN_SECURITY_KEY = envFirst('DOUYIN_SECURITY_KEY', 'DOUYIN_SECURE_KEY', 'DOUYIN_CPS_SECURITY_KEY', 'DOUYIN_CPS_SECURE_KEY');
 const DOUYIN_ENABLED = String(process.env.DOUYIN_CPS_ENABLED || process.env.DOUYIN_ENABLED || '').toLowerCase() === 'true';
 // DOUYIN_SIGN_MODE (set via Render env var):
-//   values_wrap      — DEFAULT: SK + app_id_val + data_json + timestamp_val + SK  (values only, no key names)
+//   official_kv     — DEFAULT: SK + sorted outer key/value pairs (excluding sign/sign_type) + SK
+//   values_wrap      — SK + app_id_val + data_json + timestamp_val + SK  (values only, no key names)
 //   values_suffix    — app_id_val + data_json + timestamp_val + SK
 //   values_prefix    — SK + app_id_val + data_json + timestamp_val
 //   merged_minimal   — SK + sorted(key+val for app_id/ts/data-fields) + SK
 //   merged_no_reqid  — SK + sorted(key+val, all except req_id) + SK
 //   merged           — SK + sorted(key+val, all fields expanded) + SK
 //   sorted           — SK + sorted(key+val, data as JSON string) + SK
-const DOUYIN_SIGN_MODE = envFirst('DOUYIN_SIGN_MODE') || 'values_wrap';
+const DOUYIN_SIGN_MODE = envFirst('DOUYIN_SIGN_MODE') || 'official_kv';
 const DOUYIN_CONFIGURED = !!(DOUYIN_APP_ID && DOUYIN_USER_ID && DOUYIN_ROLE_ID && DOUYIN_SECURITY_KEY);
 function douyinSafeNum(v) { const n = Number(v); return Number.isFinite(n) && String(v).trim() !== '' ? n : String(v || ''); }
 function douyinSelfCheck() {
@@ -265,6 +266,26 @@ function douyinSignWithDebug(params) {
   const dataJson = params.data || '';
   const appId = String(params.app_id || '');
   const ts = String(params.timestamp || '');
+
+  function getSorted(excludeKeys = []) {
+    const p = { ...params }; delete p.sign;
+    for (const k of excludeKeys) delete p[k];
+    return p;
+  }
+  function buildKV(obj, skMode) {
+    const keys = Object.keys(obj).filter(k => obj[k] !== undefined && obj[k] !== null).sort();
+    const inner = keys.map(k => k + obj[k]).join('');
+    let sign;
+    if (skMode === 'suffix') sign = md5Upper(inner + SK);
+    else if (skMode === 'prefix') sign = md5Upper(SK + inner);
+    else sign = md5Upper(SK + inner + SK);
+    return { sign, keys_signed: keys, input_masked: (skMode === 'suffix' ? '' : maskSk) + inner + (skMode === 'prefix' ? '' : maskSk) };
+  }
+
+  if (DOUYIN_SIGN_MODE === 'official_kv') {
+    const { sign, keys_signed, input_masked } = buildKV(getSorted(['sign_type']), 'wrap');
+    return { sign, debug: { mode: 'official_kv', keys_signed, input_masked } };
+  }
 
   // Value-only modes: no key names in sign string
   if (DOUYIN_SIGN_MODE === 'values_wrap') {
@@ -287,20 +308,6 @@ function douyinSignWithDebug(params) {
     delete merged.data; delete merged.sign;
     for (const k of excludeKeys) delete merged[k];
     return merged;
-  }
-  function getSorted(excludeKeys = []) {
-    const p = { ...params }; delete p.sign;
-    for (const k of excludeKeys) delete p[k];
-    return p;
-  }
-  function buildKV(obj, skMode) {
-    const keys = Object.keys(obj).filter(k => obj[k] !== undefined && obj[k] !== null).sort();
-    const inner = keys.map(k => k + obj[k]).join('');
-    let sign;
-    if (skMode === 'suffix') sign = md5Upper(inner + SK);
-    else if (skMode === 'prefix') sign = md5Upper(SK + inner);
-    else sign = md5Upper(SK + inner + SK);
-    return { sign, keys_signed: keys, input_masked: (skMode === 'suffix' ? '' : maskSk) + inner + (skMode === 'prefix' ? '' : maskSk) };
   }
   if (DOUYIN_SIGN_MODE === 'merged_minimal') {
     const parsed = parseJsonMaybe(params.data) || {};
@@ -386,7 +393,7 @@ async function handle(req, res) {
       return sandboxMod.handleSandbox(req, res, url);
     }
     if (url.pathname === '/' || url.pathname === '/health') {
-      const h = { ok: true, name: '价比比 API', runtime: 'server7', version: '7.6', pdd_configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID), jd_configured: !!(JD_APP_KEY && JD_APP_SECRET), tb_enabled: TB_ENABLED, tb_configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID), douyin_enabled: DOUYIN_ENABLED, douyin_configured: DOUYIN_CONFIGURED, provider_status: '/api/providers/status' };
+      const h = { ok: true, name: '价比比 API', runtime: 'server7', version: '7.8', pdd_configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID), jd_configured: !!(JD_APP_KEY && JD_APP_SECRET), tb_enabled: TB_ENABLED, tb_configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID), douyin_enabled: DOUYIN_ENABLED, douyin_configured: DOUYIN_CONFIGURED, provider_status: '/api/providers/status', douyin_debug: '/api/douyin/debug?q=小米充电宝', compare_api: '/api/compare?q=小米充电宝' };
       if (sandboxMod) Object.assign(h, sandboxMod.sandboxHealthInfo());
       return sendJson(res, 200, h);
     }
@@ -405,7 +412,7 @@ async function handle(req, res) {
         pddRequest('pdd.ddk.goods.search', { keyword: q, pid: PDD_PID, page: 1, page_size: 10 })
       ]);
       return sendJson(res, 200, {
-        ok: true, q, runtime: 'server7', version: '7.6', douyin_sign_mode: DOUYIN_SIGN_MODE,
+        ok: true, q, runtime: 'server7', version: '7.8', douyin_sign_mode: DOUYIN_SIGN_MODE,
         jd: jdR.status === 'fulfilled' ? jdR.value : { fetch_error: String(jdR.reason) },
         douyin: dyR.status === 'fulfilled' ? dyR.value : { fetch_error: String(dyR.reason) },
         pdd: pddR.status === 'fulfilled' ? { total_count: (pddR.value.goods_search_response || {}).total_count, goods_count: ((pddR.value.goods_search_response || {}).goods_list || []).length, ok: true } : { fetch_error: String(pddR.reason) }
@@ -413,6 +420,56 @@ async function handle(req, res) {
     }
 
     const { body, q, platform } = await parseInput(req, url);
+    if (url.pathname === '/api/douyin/debug') {
+      if (!q) return sendJson(res, 400, { ok: false, platform: 'douyin', error: 'missing_keyword' });
+      const result = await searchDouyin(q);
+      return sendJson(res, 200, {
+        ok: true,
+        runtime: 'server7',
+        q,
+        self_check: douyinSelfCheck(),
+        result_ok: result.ok,
+        code: result.raw?.code,
+        desc: result.raw?.desc || result.raw?.message,
+        goods_count: result.goods_list?.length || 0,
+        sign_debug: result.raw?.__request_meta?.sign_debug,
+        goods_preview: (result.goods_list || []).slice(0, 3),
+        raw: result.raw
+      });
+    }
+    if (url.pathname === '/api/compare') {
+      if (!q) return sendJson(res, 400, { ok: false, error: 'missing_keyword' });
+      const providerErrors = {};
+      const runProvider = async (name, fn) => {
+        try { return await fn(q); }
+        catch (e) {
+          providerErrors[name] = e.message || String(e);
+          return { ok: false, platform: name, keyword: q, total_count: 0, goods_list: [], error: providerErrors[name] };
+        }
+      };
+      const [pdd, jd, tb, douyin] = await Promise.all([
+        runProvider('pdd', searchPdd),
+        runProvider('jd', searchJd),
+        runProvider('tb', searchTb),
+        runProvider('douyin', searchDouyin)
+      ]);
+      const providers = { pdd, jd, tb, douyin };
+      const counts = {
+        pdd: pdd.goods_list?.length || 0,
+        jd: jd.goods_list?.length || 0,
+        tb: tb.goods_list?.length || 0,
+        douyin: douyin.goods_list?.length || 0
+      };
+      return sendJson(res, 200, {
+        ok: true,
+        runtime: 'server7',
+        q,
+        counts,
+        provider_errors: providerErrors,
+        providers,
+        goods_list: [...(pdd.goods_list || []), ...(jd.goods_list || []), ...(tb.goods_list || []), ...(douyin.goods_list || [])]
+      });
+    }
     if (url.pathname === '/api/douyin/search') { if (!q) return sendJson(res, 400, { ok: false, platform: 'douyin', error: 'missing_keyword' }); return sendJson(res, 200, await searchDouyin(q, Number(url.searchParams.get('page') || body.page || 1), Number(url.searchParams.get('page_size') || body.page_size || 20))); }
     if (url.pathname === '/api/douyin/link') return sendJson(res, 200, await douyinLink({ ...body, product_url: body.product_url || url.searchParams.get('product_url'), product_ext: body.product_ext || url.searchParams.get('product_ext') }));
     if (url.pathname === '/api/tb/search' || url.pathname === '/api/tb/real-search') { if (!q) return sendJson(res, 400, { ok: false, platform: 'tb', error: 'missing_keyword' }); return sendJson(res, 200, await searchTb(q)); }
@@ -442,4 +499,4 @@ async function handle(req, res) {
   }
 }
 
-http.createServer(handle).listen(PORT, () => console.log('Jiabibi server7.6 listening on', PORT));
+http.createServer(handle).listen(PORT, () => console.log('Jiabibi server7.8 listening on', PORT));
