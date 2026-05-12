@@ -1,4 +1,5 @@
 'use strict';
+const { sanitizePii } = require('./sanitizer');
 
 function normalizePrice(str) {
   if (typeof str === 'number') return str;
@@ -39,7 +40,7 @@ function makeItem(fields) {
     confidence: Number(fields.confidence) || 0,
     sameProductScore: Number(fields.sameProductScore) || 0,
     warnings: Array.isArray(fields.warnings) ? fields.warnings : [],
-    rawVisibleText: String(fields.rawVisibleText || '').slice(0, 500),
+    rawVisibleText: sanitizePii(String(fields.rawVisibleText || '').slice(0, 500)),
   };
 }
 

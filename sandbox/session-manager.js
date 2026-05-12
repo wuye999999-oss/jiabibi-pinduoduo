@@ -5,7 +5,7 @@ const os = require('os');
 const fs = require('fs');
 
 const TTL_MS = Number(process.env.SANDBOX_SESSION_TTL_MS) || 600000;
-const MAX_CONCURRENT = Number(process.env.SANDBOX_MAX_CONCURRENT) || 2;
+const MAX_CONCURRENT = Number(process.env.SANDBOX_MAX_CONCURRENT) || 1;
 
 const sessions = new Map();
 
