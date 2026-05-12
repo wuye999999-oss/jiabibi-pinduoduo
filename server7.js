@@ -1,5 +1,5 @@
 // server7.js v7.8
-// Use official Douyin outer key-value sign mode by default
+// Try Douyin value-only sign (no key names) — SK+appid+data+ts+SK
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
@@ -267,33 +267,6 @@ function douyinSignWithDebug(params) {
   const appId = String(params.app_id || '');
   const ts = String(params.timestamp || '');
 
-  function getSorted(excludeKeys = []) {
-    const p = { ...params }; delete p.sign;
-    for (const k of excludeKeys) delete p[k];
-    return p;
-  }
-  function buildKV(obj, skMode) {
-    const keys = Object.keys(obj).filter(k => obj[k] !== undefined && obj[k] !== null).sort();
-    const inner = keys.map(k => k + obj[k]).join('');
-    let sign;
-    if (skMode === 'suffix') sign = md5Upper(inner + SK);
-    else if (skMode === 'prefix') sign = md5Upper(SK + inner);
-    else sign = md5Upper(SK + inner + SK);
-    return { sign, keys_signed: keys, input_masked: (skMode === 'suffix' ? '' : maskSk) + inner + (skMode === 'prefix' ? '' : maskSk) };
-  }
-
-  if (DOUYIN_SIGN_MODE === 'official_kv') {
-    const officialParams = {
-      app_id: params.app_id,
-      data: params.data,
-      req_id: params.req_id,
-      timestamp: params.timestamp,
-      version: params.version
-    };
-    const { sign, keys_signed, input_masked } = buildKV(officialParams, 'wrap');
-    return { sign, debug: { mode: 'official_kv', keys_signed, input_masked } };
-  }
-
   // Value-only modes: no key names in sign string
   if (DOUYIN_SIGN_MODE === 'values_wrap') {
     const inner = appId + dataJson + ts;
@@ -315,6 +288,31 @@ function douyinSignWithDebug(params) {
     delete merged.data; delete merged.sign;
     for (const k of excludeKeys) delete merged[k];
     return merged;
+  }
+  function getSorted(excludeKeys = []) {
+    const p = { ...params }; delete p.sign;
+    for (const k of excludeKeys) delete p[k];
+    return p;
+  }
+  function buildKV(obj, skMode) {
+    const keys = Object.keys(obj).filter(k => obj[k] !== undefined && obj[k] !== null).sort();
+    const inner = keys.map(k => k + obj[k]).join('');
+    let sign;
+    if (skMode === 'suffix') sign = md5Upper(inner + SK);
+    else if (skMode === 'prefix') sign = md5Upper(SK + inner);
+    else sign = md5Upper(SK + inner + SK);
+    return { sign, keys_signed: keys, input_masked: (skMode === 'suffix' ? '' : maskSk) + inner + (skMode === 'prefix' ? '' : maskSk) };
+  }
+  if (DOUYIN_SIGN_MODE === 'official_kv') {
+    const officialParams = {
+      app_id: params.app_id,
+      data: params.data,
+      req_id: params.req_id,
+      timestamp: params.timestamp,
+      version: params.version
+    };
+    const { sign, keys_signed, input_masked } = buildKV(officialParams, 'wrap');
+    return { sign, debug: { mode: 'official_kv', keys_signed, input_masked } };
   }
   if (DOUYIN_SIGN_MODE === 'merged_minimal') {
     const parsed = parseJsonMaybe(params.data) || {};
@@ -439,7 +437,6 @@ async function handle(req, res) {
         code: result.raw?.code,
         desc: result.raw?.desc || result.raw?.message,
         goods_count: result.goods_list?.length || 0,
-        sign_debug: result.raw?.__request_meta?.sign_debug,
         goods_preview: (result.goods_list || []).slice(0, 3),
         raw: result.raw
       });
