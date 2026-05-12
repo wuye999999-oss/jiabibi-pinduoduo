@@ -1,5 +1,5 @@
 // server7.js v7.8
-// Try Douyin value-only sign (no key names) — SK+appid+data+ts+SK
+// Use official Douyin outer key-value sign mode by default
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
@@ -283,7 +283,14 @@ function douyinSignWithDebug(params) {
   }
 
   if (DOUYIN_SIGN_MODE === 'official_kv') {
-    const { sign, keys_signed, input_masked } = buildKV(getSorted(['sign_type']), 'wrap');
+    const officialParams = {
+      app_id: params.app_id,
+      data: params.data,
+      req_id: params.req_id,
+      timestamp: params.timestamp,
+      version: params.version
+    };
+    const { sign, keys_signed, input_masked } = buildKV(officialParams, 'wrap');
     return { sign, debug: { mode: 'official_kv', keys_signed, input_masked } };
   }
 
