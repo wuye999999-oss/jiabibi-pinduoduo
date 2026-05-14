@@ -1,10 +1,10 @@
 {
   "name": "jiabibi-api",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Jiabibi API backend with 真实授权验价模式",
-  "main": "server7.js",
+  "main": "server8.js",
   "scripts": {
-    "start": "node server7.js",
+    "start": "node server8.js",
     "test": "node --test tests/sandbox.test.js",
     "playwright:install": "npx playwright install chromium"
   },
