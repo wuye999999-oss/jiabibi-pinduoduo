@@ -1,7 +1,7 @@
-// server8.js v8.0 runtime patch
-// Loads server7.js, applies Douyin fixed-order value-only signing, then starts existing runtime.
+// server8.js v8.1 runtime patch
+// Loads server7.js, applies Douyin fixed-order key-value signing, then starts existing runtime.
 // Required sign order: app_id, page, page_size, role_id, timestamp, title, user_id
-// Concatenate VALUES ONLY with no separators: no =, +, -, &, comma, or spaces.
+// Concatenate PARAM_NAME + VALUE directly, with no separators: no =, +, -, &, comma, or spaces.
 
 const fs = require('fs');
 const path = require('path');
@@ -10,39 +10,39 @@ const Module = require('module');
 const server7Path = path.join(__dirname, 'server7.js');
 let source = fs.readFileSync(server7Path, 'utf8');
 
-// Force deployment to use the fixed-order value-only mode.
-process.env.DOUYIN_SIGN_MODE = 'fixed_order_values';
+// Force deployment to use the fixed-order key-value mode. This intentionally overrides Render env DOUYIN_SIGN_MODE.
+process.env.DOUYIN_SIGN_MODE = 'fixed_order_kv';
 
 // Runtime marker bump only; keep the existing stable server7 implementation.
-source = source.replace(/7\.7/g, '8.0');
-source = source.replace(/version: '7\.5'/g, "version: '8.0'");
+source = source.replace(/7\.7/g, '8.1');
+source = source.replace(/version: '7\.5'/g, "version: '8.1'");
 source = source.replace(/runtime: 'server7'/g, "runtime: 'server8'");
 source = source.replace(
   "const DOUYIN_SIGN_MODE = envFirst('DOUYIN_SIGN_MODE') || 'values_wrap';",
-  "const DOUYIN_SIGN_MODE = envFirst('DOUYIN_SIGN_MODE') || 'fixed_order_values';"
+  "const DOUYIN_SIGN_MODE = 'fixed_order_kv';"
 );
 
 const needle = "  // Value-only modes: no key names in sign string\n  if (DOUYIN_SIGN_MODE === 'values_wrap') {";
-const fixedOrderBranch = `  // Douyin fixed-order value-only signing mode.
+const fixedOrderBranch = `  // Douyin fixed-order key-value signing mode.
   // Order MUST be exactly: app_id, page, page_size, role_id, timestamp, title, user_id.
-  // Values are concatenated directly with no symbols or spaces.
-  if (DOUYIN_SIGN_MODE === 'fixed_order_values') {
+  // Concatenate PARAM_NAME + VALUE directly with no separators.
+  if (DOUYIN_SIGN_MODE === 'fixed_order_kv') {
     const parsed = parseJsonMaybe(params.data) || {};
-    const orderedValues = [
-      String(params.app_id || ''),
-      String(parsed.page || ''),
-      String(parsed.page_size || ''),
-      String(parsed.role_id || ''),
-      String(params.timestamp || ''),
-      String(parsed.title || ''),
-      String(parsed.user_id || '')
+    const orderedPairs = [
+      ['app_id', params.app_id || ''],
+      ['page', parsed.page || ''],
+      ['page_size', parsed.page_size || ''],
+      ['role_id', parsed.role_id || ''],
+      ['timestamp', params.timestamp || ''],
+      ['title', parsed.title || ''],
+      ['user_id', parsed.user_id || '']
     ];
-    const inner = orderedValues.join('');
+    const inner = orderedPairs.map(([k, v]) => k + String(v)).join('');
     return {
       sign: md5Upper(SK + inner + SK),
       debug: {
-        mode: 'fixed_order_values',
-        order: ['app_id','page','page_size','role_id','timestamp','title','user_id'],
+        mode: 'fixed_order_kv',
+        order: orderedPairs.map(([k]) => k),
         input_masked: maskSk + inner + maskSk
       }
     };
@@ -50,7 +50,7 @@ const fixedOrderBranch = `  // Douyin fixed-order value-only signing mode.
 
 `;
 
-if (!source.includes("DOUYIN_SIGN_MODE === 'fixed_order_values'")) {
+if (!source.includes("DOUYIN_SIGN_MODE === 'fixed_order_kv'")) {
   if (!source.includes(needle)) {
     throw new Error('Unable to patch Douyin signing: insertion point not found in server7.js');
   }
