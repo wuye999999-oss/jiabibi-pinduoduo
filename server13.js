@@ -1,25 +1,25 @@
 // server13.js: Douyin flat-payload fixed-order signature AUTO runtime
 // Actual Render Start Command is: node server13.js
-// Required request/sign params: app_id, page, page_size, role_id, timestamp, title, user_id
+// Sign order: app_id, page, page_size, role_id, timestamp, title, user_id
+// Transport may still require req_id/version/sign_type, but those are NOT signed.
 // Concatenate PARAM_NAME + VALUE directly, with no separators: no =, +, -, &, comma, or spaces.
-// This runtime sends those fields FLAT at top-level instead of nesting them in data.
 
 const fs = require('fs');
 const path = require('path');
 const Module = require('module');
 
 // Force correct mode regardless of Render env var.
-process.env.DOUYIN_SIGN_MODE = 'flat_fixed_order_kv_auto';
+process.env.DOUYIN_SIGN_MODE = 'flat_fixed_order_kv_auto_reqid';
 
 const server7Path = path.join(__dirname, 'server7.js');
 let source = fs.readFileSync(server7Path, 'utf8');
 
-source = source.replace(/7\.7/g, '7.13-flat');
-source = source.replace(/version: '7\.5'/g, "version: '7.13-flat'");
-source = source.replace(/runtime: 'server7'/g, "runtime: 'server13-flat'");
+source = source.replace(/7\.7/g, '7.13-flat-reqid');
+source = source.replace(/version: '7\.5'/g, "version: '7.13-flat-reqid'");
+source = source.replace(/runtime: 'server7'/g, "runtime: 'server13-flat-reqid'");
 source = source.replace(
   "const DOUYIN_SIGN_MODE = envFirst('DOUYIN_SIGN_MODE') || 'values_wrap';",
-  "const DOUYIN_SIGN_MODE = 'flat_fixed_order_kv_auto';"
+  "const DOUYIN_SIGN_MODE = 'flat_fixed_order_kv_auto_reqid';"
 );
 
 const oldDouyinRequest = `async function douyinRequest(path, data = {}) {
@@ -61,33 +61,37 @@ const newDouyinRequest = `async function douyinRequest(path, data = {}) {
       : inner;
     const hex = crypto.createHash('md5').update(String(rawInput), 'utf8').digest('hex');
     const sign = formula.endsWith('_upper') ? hex.toUpperCase() : hex;
-    const payload = { ...flatBase, sign };
+
+    // req_id/version/sign_type are transport-required outer fields. They are deliberately excluded from signature.
+    const payload = { ...flatBase, req_id: newReqId(), version: '1', sign_type: 'MD5', sign };
 
     const raw = await postJson(DOUYIN_API_HOST + path, payload, 9000);
     const code = Number(raw && raw.code);
     attempts.push({ formula, code: raw && raw.code, desc: raw && raw.desc, sign_prefix: String(sign).slice(0, 6), sign_length: String(sign).length });
     raw.__request_meta = {
       path,
-      sign_mode: 'flat_fixed_order_kv_auto',
+      sign_mode: 'flat_fixed_order_kv_auto_reqid',
       secret_sent_to_client: false,
       sign_debug: {
-        mode: 'flat_fixed_order_kv_auto',
+        mode: 'flat_fixed_order_kv_auto_reqid',
         formula,
         order,
         flat_payload: true,
+        req_id_sent: true,
+        unsigned_transport_fields: ['req_id','version','sign_type'],
         fields_sent: Object.keys(payload).filter(k => k !== 'sign'),
         input_masked: (formula.startsWith('wrap') || formula.startsWith('prefix') ? DOUYIN_SECURITY_KEY.slice(0,4) + '****' + DOUYIN_SECURITY_KEY.slice(-4) : '') + inner + (formula.startsWith('wrap') || formula.startsWith('suffix') ? DOUYIN_SECURITY_KEY.slice(0,4) + '****' + DOUYIN_SECURITY_KEY.slice(-4) : '')
       },
       attempts
     };
     lastRaw = raw;
-    if (code !== 100004) return raw;
+    if (code !== 100004 && code !== 100002) return raw;
   }
   return lastRaw;
 }`;
 
 if (!source.includes(oldDouyinRequest)) {
-  throw new Error('Unable to patch Douyin request flat payload: function body not found in server7.js');
+  throw new Error('Unable to patch Douyin request flat payload req_id: function body not found in server7.js');
 }
 source = source.replace(oldDouyinRequest, newDouyinRequest);
 
