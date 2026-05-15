@@ -1,4 +1,4 @@
-// server13.js: Douyin official common-parameter signature runtime
+// server13.js: Douyin official common-parameter signature exhaustive runtime
 // Render Start Command: node server13.js
 // Official body: app_id, timestamp, version, sign_type, req_id, data(string), sign.
 // Product search data string: page, page_size, title, user_id, role_id.
@@ -7,17 +7,17 @@ const fs = require('fs');
 const path = require('path');
 const Module = require('module');
 
-process.env.DOUYIN_SIGN_MODE = 'official_common_auto';
+process.env.DOUYIN_SIGN_MODE = 'official_exhaustive_auto';
 
 const server7Path = path.join(__dirname, 'server7.js');
 let source = fs.readFileSync(server7Path, 'utf8');
 
-source = source.replace(/7\.7/g, '7.13-official-common');
-source = source.replace(/version: '7\.5'/g, "version: '7.13-official-common'");
-source = source.replace(/runtime: 'server7'/g, "runtime: 'server13-official-common'");
+source = source.replace(/7\.7/g, '7.13-exhaustive');
+source = source.replace(/version: '7\.5'/g, "version: '7.13-exhaustive'");
+source = source.replace(/runtime: 'server7'/g, "runtime: 'server13-exhaustive'");
 source = source.replace(
   "const DOUYIN_SIGN_MODE = envFirst('DOUYIN_SIGN_MODE') || 'values_wrap';",
-  "const DOUYIN_SIGN_MODE = 'official_common_auto';"
+  "const DOUYIN_SIGN_MODE = 'official_exhaustive_auto';"
 );
 
 const oldDouyinRequest = `async function douyinRequest(path, data = {}) {
@@ -54,28 +54,40 @@ const newDouyinRequest = `async function douyinRequest(path, data = {}) {
   };
 
   const attempts = [];
-  const formulaList = ['wrap_lower','wrap_upper','suffix_lower','suffix_upper','prefix_lower','prefix_upper'];
-  const inputList = [
-    { name: 'common_all_sorted', keys: ['app_id','data','req_id','sign_type','timestamp','version'] },
-    { name: 'common_no_signtype', keys: ['app_id','data','req_id','timestamp','version'] },
-    { name: 'common_no_version', keys: ['app_id','data','req_id','sign_type','timestamp'] },
-    { name: 'common_required_only', keys: ['app_id','data','req_id','timestamp'] }
-  ];
+  const formulaList = ['wrap_lower','wrap_upper','suffix_lower','suffix_upper','prefix_lower','prefix_upper','plain_lower','plain_upper'];
+  const inputList = [];
+  const commonAll = ['app_id','data','req_id','sign_type','timestamp','version'];
+  const commonReq = ['app_id','data','req_id','timestamp'];
+  const biz7 = ['app_id','page','page_size','role_id','timestamp','title','user_id'];
+  const commonObj = () => ({ app_id: base.app_id, data: base.data, req_id: base.req_id, sign_type: base.sign_type, timestamp: base.timestamp, version: base.version });
+  const bizObj = () => ({ app_id: base.app_id, page: dataObj.page, page_size: dataObj.page_size, role_id: dataObj.role_id, timestamp: base.timestamp, title: dataObj.title, user_id: dataObj.user_id });
+
+  function pushInputs(name, keys, objFn) {
+    inputList.push({ name: name + '_kv', keys, build: o => keys.map(k => k + String(o[k] ?? '')).join(''), objFn });
+    inputList.push({ name: name + '_values', keys, build: o => keys.map(k => String(o[k] ?? '')).join(''), objFn });
+    inputList.push({ name: name + '_eq_amp', keys, build: o => keys.map(k => k + '=' + String(o[k] ?? '')).join('&'), objFn });
+  }
+  pushInputs('common_all', commonAll, commonObj);
+  pushInputs('common_required', commonReq, commonObj);
+  pushInputs('business7', biz7, bizObj);
 
   let lastRaw = null;
   for (const inputCfg of inputList) {
     for (const formula of formulaList) {
       const payload = { ...base, req_id: newReqId() };
-      const inner = inputCfg.keys.map(k => k + String(payload[k] ?? '')).join('');
+      const o = inputCfg.objFn();
+      o.req_id = payload.req_id;
+      const inner = inputCfg.build(o);
       const rawInput = formula.startsWith('wrap') ? DOUYIN_SECURITY_KEY + inner + DOUYIN_SECURITY_KEY
         : formula.startsWith('suffix') ? inner + DOUYIN_SECURITY_KEY
-        : DOUYIN_SECURITY_KEY + inner;
+        : formula.startsWith('prefix') ? DOUYIN_SECURITY_KEY + inner
+        : inner;
       const hex = crypto.createHash('md5').update(String(rawInput), 'utf8').digest('hex');
       payload.sign = formula.endsWith('upper') ? hex.toUpperCase() : hex;
       const raw = await postJson(DOUYIN_API_HOST + path, payload, 9000);
       const code = Number(raw && raw.code);
       attempts.push({ input: inputCfg.name, formula, code: raw && raw.code, desc: raw && raw.desc, sign_prefix: String(payload.sign).slice(0, 6), sign_length: String(payload.sign).length });
-      raw.__request_meta = { path, sign_mode: 'official_common_auto', sign_debug: { input: inputCfg.name, formula, keys: inputCfg.keys, data_is_string: true, fields_sent: Object.keys(payload).filter(k => k !== 'sign') }, attempts };
+      raw.__request_meta = { path, sign_mode: 'official_exhaustive_auto', sign_debug: { input: inputCfg.name, formula, keys: inputCfg.keys, data_is_string: true, fields_sent: Object.keys(payload).filter(k => k !== 'sign') }, attempts };
       lastRaw = raw;
       if (code !== 100004 && code !== 100002) return raw;
     }
