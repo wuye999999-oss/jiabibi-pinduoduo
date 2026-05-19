@@ -1,321 +1,349 @@
+// server.js v9.0
+// Consolidated entry point. JD / PDD / Taobao active. Douyin: stub (not yet integrated).
+// Previous entry was server8.js (patch loader over server7.js) — now merged inline.
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
 
+const sandboxMod = (() => { try { return require('./sandbox/routes'); } catch (_) { return null; } })();
 const PORT = process.env.PORT || 3000;
-const PDD_API_URL = process.env.PDD_API_URL || 'https://gw-api.pinduoduo.com/api/router';
-const PDD_CLIENT_ID = process.env.PDD_CLIENT_ID || '';
-const PDD_CLIENT_SECRET = process.env.PDD_CLIENT_SECRET || '';
-const PDD_PID = process.env.PDD_PID || '';
-const PDD_CUSTOM_PARAMETERS = process.env.PDD_CUSTOM_PARAMETERS || '';
 
 function envFirst(...names) {
-  for (const name of names) {
-    const value = process.env[name];
-    if (value !== undefined && value !== null && String(value).trim() !== '') return String(value).trim();
-  }
+  for (const name of names) { const v = process.env[name]; if (v && String(v).trim()) return String(v).trim(); }
   return '';
 }
-
-const JD_API_URL = envFirst('JD_API_URL') || 'https://api.jd.com/routerjson';
-const JD_APP_KEY = envFirst('JD_APP_KEY', 'JD_APPKEY', 'JD_APP_KEY_ID', 'JD_KEY', 'APP_KEY');
-const JD_APP_SECRET = envFirst('JD_APP_SECRET', 'JD_APPSECRET', 'JD_SECRET', 'JD_SECRET_KEY', 'SECRET_KEY', 'APP_SECRET');
-const JD_ACCESS_TOKEN = envFirst('JD_ACCESS_TOKEN', 'JD_TOKEN', 'ACCESS_TOKEN');
-const JD_POSITION_ID = envFirst('JD_POSITION_ID', 'JD_POSITIONID', 'JD_POS_ID') || '3104496027';
-const JD_PID = envFirst('JD_PID') || '2038054117_4104082584_3104496027';
-const JD_SITE_ID = envFirst('JD_SITE_ID', 'JD_SITEID') || (JD_PID.split('_')[1] || '');
-const JD_PROMOTION_METHOD = envFirst('JD_PROMOTION_METHOD') || 'jd.union.open.promotion.common.get';
-
-function md5Upper(input) { return crypto.createHash('md5').update(input, 'utf8').digest('hex').toUpperCase(); }
-function cleanParams(params) { const out = {}; for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== '') out[k] = String(v); return out; }
-function makeSign(params, secret) { let raw = secret; Object.keys(params).sort().forEach(k => raw += k + params[k]); raw += secret; return md5Upper(raw); }
-function yuanFromFen(v) { return Math.round(Number(v || 0)) / 100; }
-function asArray(v) { if (!v) return []; return Array.isArray(v) ? v : [v]; }
-function httpsUrl(u) { if (!u) return ''; return String(u).startsWith('http') ? String(u) : `https://${String(u).replace(/^\/\//, '')}`; }
-function decodeText(input) { try { return decodeURIComponent(String(input || '')); } catch { return String(input || ''); } }
-function findUrl(input) { const m = decodeText(input).match(/https?:\/\/[^\s\u3000]+/i); return m ? m[0].replace(/[，。；;]+$/, '') : ''; }
-function cleanShareKeyword(input) {
-  let text = decodeText(input)
-    .replace(/https?:\/\/[^\s\u3000]+/ig, ' ')
-    .replace(/\b\d{1,2}\.\d{1,2}\s+\d{1,2}\/\d{1,2}\s+[\s\S]{0,30}?:\/\s*/g, ' ')
-    .replace(/长按复制[\s\S]*$/g, ' ')
-    .replace(/打开(抖音|淘宝|京东|拼多多)[\s\S]*$/g, ' ')
-    .replace(/查看商品详情[\s\S]*$/g, ' ')
-    .replace(/【抖音商城】|【淘宝】|【天猫】|【京东】|【拼多多】|【抖音商场】/g, ' ')
-    .replace(/[“”"'`]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  const chunks = text.match(/[\u4e00-\u9fa5A-Za-z0-9\.\-\+（）()]+/g) || [];
-  text = chunks.join(' ').replace(/\s+/g, ' ').trim();
-  for (const s of ['抖音商城', '淘宝', '天猫', '京东', '拼多多', '复制', '搜索']) text = text.replace(new RegExp(s, 'g'), ' ');
-  text = text.replace(/\s+/g, ' ').trim();
-  return text.length >= 2 ? text.slice(0, 80) : '';
+function md5Upper(s) { return crypto.createHash('md5').update(String(s), 'utf8').digest('hex').toUpperCase(); }
+function cleanParams(p) {
+  const out = {};
+  for (const [k, v] of Object.entries(p || {})) { if (v !== undefined && v !== null && v !== '') out[k] = String(v); }
+  return out;
 }
-
-function postForm(url, params) {
+function asArray(v) { return !v ? [] : (Array.isArray(v) ? v : [v]); }
+function yuanFromFen(v) { return Math.round(Number(v || 0)) / 100; }
+function httpsUrl(u) {
+  if (!u) return ''; const s = String(u).trim(); if (!s) return '';
+  if (/^https?:\/\//i.test(s)) return s;
+  return 'https://' + s.replace(/^\/\//, '');
+}
+function sendJson(res, status, body) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type, Authorization', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS,DELETE' });
+  res.end(JSON.stringify(body, null, 2));
+}
+function readBody(req) {
+  return new Promise(resolve => {
+    let data = '';
+    req.on('data', chunk => { data += chunk; if (data.length > 2_000_000) req.destroy(); });
+    req.on('end', () => resolve(data)); req.on('error', () => resolve(''));
+  });
+}
+function postForm(endpoint, params, timeoutMs = 9000) {
   return new Promise((resolve, reject) => {
     const body = new URLSearchParams(params).toString();
-    const target = new URL(url);
-    const req = https.request({
-      method: 'POST', hostname: target.hostname, path: target.pathname + target.search, port: target.port || 443,
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) }
-    }, (res) => {
-      let data = '';
-      res.setEncoding('utf8');
-      res.on('data', c => data += c);
-      res.on('end', () => { try { resolve(JSON.parse(data)); } catch (_) { reject(new Error('API returned non-JSON: ' + data.slice(0, 300))); } });
+    let u; try { u = new URL(endpoint); } catch (e) { return reject(e); }
+    const cli = u.protocol === 'http:' ? http : https;
+    const req = cli.request({ method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs, headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/9.0' } }, res => {
+      let data = ''; res.setEncoding('utf8');
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('non_json ' + data.slice(0, 200))); } });
     });
+    req.on('timeout', () => req.destroy(Object.assign(new Error('request_timeout'), { code: 'ETIMEDOUT' })));
     req.on('error', reject); req.write(body); req.end();
   });
 }
-
-function fetchPage(rawUrl, redirects = 0) {
+function postJson(endpoint, payload, timeoutMs = 9000) {
   return new Promise((resolve, reject) => {
-    if (redirects > 5) return resolve({ ok: false, error: 'too_many_redirects', url: rawUrl, status: 0, html: '', final_url: rawUrl, redirects });
-    let target;
-    try { target = new URL(rawUrl); } catch (e) { return reject(e); }
-    const client = target.protocol === 'http:' ? http : https;
-    const req = client.request({
-      method: 'GET', hostname: target.hostname, port: target.port || (target.protocol === 'http:' ? 80 : 443), path: target.pathname + target.search,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Safari/604.1',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        'Referer': 'https://mobile.yangkeduo.com/'
-      },
-      timeout: 8000
-    }, res => {
-      const loc = res.headers.location;
-      if ([301,302,303,307,308].includes(res.statusCode) && loc) {
-        const next = new URL(loc, rawUrl).toString();
-        res.resume();
-        return fetchPage(next, redirects + 1).then(resolve, reject);
-      }
-      let html = '';
-      res.setEncoding('utf8');
-      res.on('data', c => { html += c; if (html.length > 800000) req.destroy(); });
-      res.on('end', () => resolve({ ok: true, url: rawUrl, final_url: rawUrl, status: res.statusCode, html, redirects }));
+    const body = JSON.stringify(payload || {});
+    let u; try { u = new URL(endpoint); } catch (e) { return reject(e); }
+    const cli = u.protocol === 'http:' ? http : https;
+    const req = cli.request({ method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs, headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/9.0' } }, res => {
+      let data = ''; res.setEncoding('utf8');
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('non_json ' + data.slice(0, 200))); } });
     });
-    req.on('timeout', () => req.destroy(new Error('request_timeout')));
-    req.on('error', reject);
-    req.end();
+    req.on('timeout', () => req.destroy(Object.assign(new Error('request_timeout'), { code: 'ETIMEDOUT' })));
+    req.on('error', reject); req.write(body); req.end();
   });
 }
-
-function htmlDecode(s) {
-  return String(s || '').replace(/&quot;/g, '"').replace(/&#34;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").trim();
-}
-function extractPddFromText(text) {
-  const raw = decodeText(text || '');
-  const out = { goods_id: '', goods_sign: '', title: '', matched: {} };
-  const idPatterns = [/goods_id["'\s:=]+(\d{5,})/i, /goodsId["'\s:=]+(\d{5,})/i, /goods_id=(\d{5,})/i, /goodsId=(\d{5,})/i, /goods\/detail\/(\d{5,})/i, /goods_id%3D(\d{5,})/i];
-  for (const re of idPatterns) { const m = raw.match(re); if (m) { out.goods_id = m[1]; out.matched.goods_id = re.toString(); break; } }
-  const signPatterns = [/goods_sign["'\s:=]+([A-Za-z0-9_\-]{8,})/i, /goodsSign["'\s:=]+([A-Za-z0-9_\-]{8,})/i, /goods_sign=([A-Za-z0-9_\-]{8,})/i, /goodsSign=([A-Za-z0-9_\-]{8,})/i, /goods_sign%3D([A-Za-z0-9_\-]{8,})/i];
-  for (const re of signPatterns) { const m = raw.match(re); if (m) { out.goods_sign = m[1]; out.matched.goods_sign = re.toString(); break; } }
-  const titlePatterns = [/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']{2,120})["']/i, /<meta[^>]+name=["']description["'][^>]+content=["']([^"']{2,160})["']/i, /<title[^>]*>([^<]{2,120})<\/title>/i, /goodsName["'\s:]+["']([^"']{2,120})["']/i, /goods_name["'\s:]+["']([^"']{2,120})["']/i];
-  for (const re of titlePatterns) { const m = raw.match(re); if (m) { out.title = htmlDecode(m[1]).replace(/拼多多|PDD|百亿补贴|多人团/g, ' ').replace(/\s+/g, ' ').trim(); out.matched.title = re.toString(); break; } }
-  return out;
-}
-async function resolvePddPsLink(input) {
-  const parsed = parseProductLink(input);
-  const result = { ok: false, platform: 'pdd', input, parsed, final_url: parsed.url || input, goods_id: '', goods_sign: '', title: '', method: 'ps_expand', message: '' };
-  if (parsed.platform !== 'pdd' || parsed.id_type !== 'ps') { result.message = 'not_pdd_ps_link'; return result; }
-  try {
-    const page = await fetchPage(parsed.url);
-    result.final_url = page.final_url || parsed.url;
-    result.status = page.status;
-    result.redirects = page.redirects;
-    const fromUrl = extractPddFromText(result.final_url);
-    const fromHtml = extractPddFromText(page.html || '');
-    result.goods_id = fromUrl.goods_id || fromHtml.goods_id || '';
-    result.goods_sign = fromUrl.goods_sign || fromHtml.goods_sign || '';
-    result.title = fromHtml.title || fromUrl.title || cleanShareKeyword(page.html || '') || '';
-    result.ok = Boolean(result.goods_id || result.goods_sign || result.title);
-    result.message = result.ok ? 'resolved_or_title_extracted' : 'ps_link_loaded_but_no_goods_id_or_title_found';
-    return result;
-  } catch (err) {
-    result.message = err.message || String(err);
-    return result;
-  }
+function sortByPrice(goods) { return (goods || []).slice().sort((a, b) => Number(a.coupon_price_yuan || a.min_group_price_yuan || 0) - Number(b.coupon_price_yuan || b.min_group_price_yuan || 0)); }
+function cheapest(goods) { return sortByPrice(goods).find(x => Number(x.coupon_price_yuan || x.min_group_price_yuan || 0) > 0) || null; }
+function parseJsonMaybe(v) { if (!v) return null; if (typeof v === 'object') return v; try { return JSON.parse(String(v)); } catch { return null; } }
+function findDeep(obj, pred, limit = 5000) {
+  const seen = new Set(); const out = [];
+  function walk(v) { if (!v || typeof v !== 'object' || seen.has(v) || out.length >= limit) return; seen.add(v); if (pred(v)) out.push(v); if (Array.isArray(v)) v.forEach(walk); else Object.values(v).forEach(walk); }
+  walk(obj); return out;
 }
 
-function jdTimestamp() {
-  const now = new Date(); const utc = now.getTime() + now.getTimezoneOffset() * 60000; const bj = new Date(utc + 8 * 3600000); const p = n => String(n).padStart(2, '0');
-  return `${bj.getFullYear()}-${p(bj.getMonth() + 1)}-${p(bj.getDate())} ${p(bj.getHours())}:${p(bj.getMinutes())}:${p(bj.getSeconds())}`;
-}
+// ---------- PDD ----------
+const PDD_API_URL = process.env.PDD_API_URL || 'https://gw-api.pinduoduo.com/api/router';
+const PDD_CLIENT_ID = envFirst('PDD_CLIENT_ID', 'PDD_APP_KEY');
+const PDD_CLIENT_SECRET = envFirst('PDD_CLIENT_SECRET', 'PDD_APP_SECRET');
+const PDD_PID = envFirst('PDD_PID');
+const PDD_CUSTOM_PARAMETERS = envFirst('PDD_CUSTOM_PARAMETERS');
+function pddSign(p) { let s = PDD_CLIENT_SECRET; Object.keys(p).sort().forEach(k => { s += k + p[k]; }); return md5Upper(s + PDD_CLIENT_SECRET); }
 async function pddRequest(type, biz = {}) {
   if (!PDD_CLIENT_ID || !PDD_CLIENT_SECRET || !PDD_PID) return { error: 'missing_pdd_env' };
   const params = cleanParams({ type, client_id: PDD_CLIENT_ID, timestamp: Math.floor(Date.now() / 1000), data_type: 'JSON', ...biz });
-  params.sign = makeSign(params, PDD_CLIENT_SECRET.trim());
+  params.sign = pddSign(params);
   return postForm(PDD_API_URL, params);
 }
+function normalizePdd(item, source = 'pdd.ddk.goods.search') {
+  const price = Number(item.min_group_price || item.min_normal_price || 0);
+  const coupon = Number(item.coupon_discount || item.extra_coupon_amount || 0);
+  const final = Math.max(0, price - coupon);
+  return { platform: 'pdd', source, goods_name: item.goods_name || '', goods_desc: item.goods_desc || item.goods_name || '', brand_name: item.brand_name || '', shop_name: item.mall_name || '', goods_image_url: item.goods_image_url || '', goods_thumbnail_url: item.goods_thumbnail_url || item.goods_image_url || '', goods_id: String(item.goods_id || ''), goods_sign: item.goods_sign || '', sales_tip: item.sales_tip || '', min_group_price_yuan: yuanFromFen(price), coupon_discount_yuan: yuanFromFen(coupon), coupon_price_yuan: yuanFromFen(final || price), has_coupon: coupon > 0, unified_tags: ['拼多多'], material_url: item.goods_url || '', url: item.goods_url || '', raw: item };
+}
+async function searchPdd(q) {
+  const raw = await pddRequest('pdd.ddk.goods.search', { keyword: q, pid: PDD_PID, page: 1, page_size: 20, custom_parameters: PDD_CUSTOM_PARAMETERS });
+  if (raw.error || raw.error_response) return { ok: false, platform: 'pdd', keyword: q, total_count: 0, goods_list: [], raw };
+  const list = raw.goods_search_response && raw.goods_search_response.goods_list ? asArray(raw.goods_search_response.goods_list) : [];
+  return { ok: true, platform: 'pdd', source: 'pdd.ddk.goods.search', keyword: q, total_count: list.length, goods_list: list.map(x => normalizePdd(x)), raw };
+}
+async function pddLink(body) {
+  const goodsSign = body.goods_sign || body.goodsSign || '', goodsId = body.goods_id || body.goodsId || '';
+  const biz = { p_id: PDD_PID, generate_short_url: 'true', custom_parameters: PDD_CUSTOM_PARAMETERS };
+  if (goodsSign) biz.goods_sign_list = JSON.stringify([goodsSign]); else if (goodsId) biz.goods_id_list = JSON.stringify([Number(goodsId)]); else return { ok: false, platform: 'pdd', error: 'missing_goods_sign_or_id' };
+  const raw = await pddRequest('pdd.ddk.goods.promotion.url.generate', biz);
+  const list = raw.goods_promotion_url_generate_response && raw.goods_promotion_url_generate_response.goods_promotion_url_list ? asArray(raw.goods_promotion_url_generate_response.goods_promotion_url_list) : [];
+  const first = list[0] || {};
+  const url = first.short_url || first.mobile_short_url || first.url || first.mobile_url || '';
+  return { ok: !!url, platform: 'pdd', url, material_url: url, raw };
+}
+
+// ---------- JD ----------
+// NOTE: JD_POSITION_ID and JD_PID must be set via Render env vars. No hardcoded defaults.
+// If jd.union.open.goods.query returns 403/permission errors, either apply for the interface
+// at union.jd.com or switch JD_SEARCH_METHOD to jd.union.open.goods.jingfen.query.
+const JD_API_URL = envFirst('JD_API_URL') || 'https://api.jd.com/routerjson';
+const JD_APP_KEY = envFirst('JD_APP_KEY', 'JD_APPKEY', 'APP_KEY');
+const JD_APP_SECRET = envFirst('JD_APP_SECRET', 'JD_APPSECRET', 'APP_SECRET');
+const JD_ACCESS_TOKEN = envFirst('JD_ACCESS_TOKEN', 'JD_TOKEN');
+const JD_POSITION_ID = envFirst('JD_POSITION_ID', 'JD_POSITIONID');
+const JD_PID = envFirst('JD_PID');
+const JD_SITE_ID = envFirst('JD_SITE_ID', 'JD_SITEID') || (JD_PID ? JD_PID.split('_')[1] || '' : '');
+const JD_SEARCH_METHOD = envFirst('JD_SEARCH_METHOD') || 'jd.union.open.goods.query';
+const JD_PROMOTION_METHOD = envFirst('JD_PROMOTION_METHOD') || 'jd.union.open.promotion.common.get';
+function jdTimestamp() { const d = new Date(Date.now() + 8 * 3600000); const p = n => String(n).padStart(2, '0'); return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`; }
+function jdSign(params) { let s = JD_APP_SECRET; Object.keys(params).sort().forEach(k => { s += k + params[k]; }); return md5Upper(s + JD_APP_SECRET); }
 async function jdRequest(method, biz = {}) {
   if (!JD_APP_KEY || !JD_APP_SECRET) return { error: 'missing_jd_env' };
   const params = cleanParams({ method, app_key: JD_APP_KEY, access_token: JD_ACCESS_TOKEN, timestamp: jdTimestamp(), format: 'json', v: '1.0', sign_method: 'md5', '360buy_param_json': JSON.stringify(biz) });
-  params.sign = makeSign(params, JD_APP_SECRET);
+  params.sign = jdSign(params);
   return postForm(JD_API_URL, params);
 }
+function normalizeJd(item, source = 'jd.union.open.goods.query') {
+  const skuId = String(item.skuId || item.sku_id || item.itemId || '');
+  const priceInfo = item.priceInfo || item.price_info || {};
+  const couponInfo = item.couponInfo || item.coupon_info || {};
+  const imageInfo = item.imageInfo || item.image_info || {};
+  const images = imageInfo.imageList || imageInfo.image_list || [];
+  const price = Number(priceInfo.price || priceInfo.lowestPrice || item.price || 0);
+  const coupon = Number(couponInfo.discount || 0);
+  const url = skuId ? `https://item.jd.com/${skuId}.html` : '';
+  return { platform: 'jd', source, goods_name: item.skuName || item.goodsName || item.name || '', goods_desc: item.skuName || '', brand_name: item.brandName || '', shop_name: item.shopName || '', goods_image_url: httpsUrl((images[0] && (images[0].url || images[0].imageUrl)) || item.imageUrl || ''), goods_thumbnail_url: httpsUrl((images[0] && (images[0].url || images[0].imageUrl)) || item.imageUrl || ''), sku_id: skuId, goods_id: skuId, sales_tip: item.comments || item.inOrderCount30Days || '', min_group_price_yuan: price, coupon_discount_yuan: coupon, coupon_price_yuan: Math.max(0, price - coupon) || price, has_coupon: coupon > 0, unified_tags: ['京东'], material_url: url, url, raw: item };
+}
+async function searchJd(q) {
+  const posId = Number(JD_POSITION_ID) || undefined;
+  const goodsReq = { keyword: q, pageIndex: 1, pageSize: 20 };
+  if (posId) goodsReq.positionId = posId;
+  const raw = await jdRequest(JD_SEARCH_METHOD, { goodsReq });
+  if (raw.error || raw.error_response) {
+    return { ok: false, platform: 'jd', keyword: q, total_count: 0, goods_list: [],
+      error: (raw.error_response && (raw.error_response.zh_desc || raw.error_response.en_desc)) || raw.error, raw };
+  }
+  const resp = raw.jd_union_open_goods_query_response || raw.jd_union_open_goods_query_responce || {};
+  const resultText = resp.result || resp.queryResult;
+  const parsed = parseJsonMaybe(resultText) || {};
+  if (parsed.code !== undefined && Number(parsed.code) !== 0) {
+    return { ok: false, platform: 'jd', keyword: q, total_count: 0, goods_list: [],
+      error: 'jd_api_error', jd_code: parsed.code, jd_message: parsed.message || '', raw };
+  }
+  const dataArr = Array.isArray(parsed.data) ? parsed.data
+    : findDeep(parsed || raw, x => x && (x.skuId || x.skuName || x.goodsName)).slice(0, 20);
+  const goods = dataArr.map(x => normalizeJd(x));
+  return { ok: goods.length > 0, platform: 'jd', source: JD_SEARCH_METHOD, keyword: q,
+    total_count: goods.length, goods_list: goods, jd_code: parsed.code, jd_message: parsed.message, raw };
+}
+async function jdLink(body) {
+  const skuId = body.sku_id || body.skuId || '';
+  const materialId = body.material_url || body.materialId || body.url || (skuId ? `https://item.jd.com/${skuId}.html` : '');
+  if (!materialId) return { ok: false, platform: 'jd', error: 'missing_material_id' };
+  const raw = await jdRequest(JD_PROMOTION_METHOD, { promotionCodeReq: cleanParams({ materialId, couponUrl: body.coupon_url || body.couponUrl || '', siteId: JD_SITE_ID, positionId: JD_POSITION_ID }) });
+  function findUrl(v, depth) {
+    if (!v || depth > 8) return ''; if (typeof v === 'string' && /^https?:\/\//.test(v)) return v;
+    if (typeof v === 'object') { for (const val of Object.values(v)) { const u = findUrl(val, depth + 1); if (u) return u; } }
+    return '';
+  }
+  const url = findUrl(raw, 0);
+  return { ok: !!url, platform: 'jd', url, material_url: url, raw };
+}
 
-function parseProductLink(input) {
-  const text = decodeText(input); const url = findUrl(text) || text;
-  const out = { is_link: /^https?:\/\//i.test(url), platform: '', id: '', id_type: '', url, keyword_hint: cleanShareKeyword(text), unresolved: false, unresolved_reason: '' };
-  if (!out.is_link) return out;
-  let u; try { u = new URL(url); } catch { return out; }
-  const host = u.hostname.toLowerCase(); const all = decodeText(url);
-  if (/jd\.com|3\.cn/.test(host)) {
-    out.platform = 'jd'; out.id_type = 'sku_id';
-    for (const re of [/item\.jd\.com\/(\d+)\.html/i, /item\.m\.jd\.com\/(?:product\/)?(\d+)\.html/i, /sku(?:Id|id)?[=:](\d{5,})/i, /wareId[=:](\d{5,})/i]) { const m = all.match(re); if (m) { out.id = m[1]; break; } }
-  } else if (/pinduoduo\.com|yangkeduo\.com|pdd\.cn/.test(host)) {
-    out.platform = 'pdd';
-    const ps = u.searchParams.get('ps') || '';
-    out.id = u.searchParams.get('goods_id') || u.searchParams.get('goodsId') || u.searchParams.get('goods_sign') || u.searchParams.get('goodsSign') || '';
-    if (out.id) out.id_type = /[a-zA-Z_]/.test(out.id) ? 'goods_sign' : 'goods_id';
-    else if (ps) { out.id = ps; out.id_type = 'ps'; out.unresolved = true; out.unresolved_reason = '拼多多 ps 短分享参数，需要服务端展开。'; }
-  } else if (/taobao\.com|tmall\.com|tb\.cn/.test(host)) {
-    out.platform = 'tb'; out.id_type = 'item_id'; out.id = u.searchParams.get('id') || u.searchParams.get('itemId') || u.searchParams.get('item_id') || ''; out.keyword_hint = out.keyword_hint || u.searchParams.get('title') || u.searchParams.get('q') || u.searchParams.get('keyword') || '';
-  } else if (/douyin\.com|jinritemai\.com|iesdouyin\.com/.test(host)) {
-    out.platform = 'douyin'; out.id_type = 'product_id'; out.id = u.searchParams.get('id') || u.searchParams.get('product_id') || u.searchParams.get('promotion_id') || ''; out.keyword_hint = out.keyword_hint || u.searchParams.get('title') || u.searchParams.get('keyword') || '';
+// ---------- Taobao ----------
+const TB_API_URL = envFirst('TB_API_URL') || 'https://eco.taobao.com/router/rest';
+const TB_API_FALLBACK_URL = envFirst('TB_API_FALLBACK_URL') || 'http://gw.api.taobao.com/router/rest';
+const TB_APP_KEY = envFirst('TB_APP_KEY', 'TAOBAO_APP_KEY', 'ALIMAMA_APP_KEY');
+const TB_APP_SECRET = envFirst('TB_APP_SECRET', 'TAOBAO_APP_SECRET', 'ALIMAMA_APP_SECRET');
+let TB_ADZONE_ID = envFirst('TB_ADZONE_ID', 'TAOBAO_ADZONE_ID', 'ADZONE_ID');
+const TB_PID = envFirst('TB_PID', 'TAOBAO_PID');
+const TB_ENABLED = String(process.env.TB_ENABLED || '').toLowerCase() === 'true';
+const TB_SEARCH_METHOD = envFirst('TB_SEARCH_METHOD') || 'taobao.tbk.dg.material.optional.upgrade';
+const TB_ITEM_METHOD = envFirst('TB_ITEM_METHOD') || 'taobao.tbk.item.info.get';
+const TB_TIMEOUT_MS = Number(process.env.TB_TIMEOUT_MS || 6500);
+(function normalizeAdzone() { const raw = String(TB_ADZONE_ID || TB_PID || '').trim(); const fromPid = raw.match(/(?:mm_)?\d+_\d+_(\d+)$/); const direct = raw.match(/^\d+$/); if (fromPid) TB_ADZONE_ID = fromPid[1]; else if (direct) TB_ADZONE_ID = raw; })();
+function tbTimestamp() { const d = new Date(Date.now() + 8 * 3600000); const p = n => String(n).padStart(2, '0'); return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`; }
+function tbSign(params) { let s = TB_APP_SECRET; Object.keys(params).sort().forEach(k => { s += k + String(params[k]); }); return md5Upper(s + TB_APP_SECRET); }
+async function tbRequest(method, biz = {}) {
+  if (!TB_ENABLED) return { error: 'tb_disabled' }; if (!TB_APP_KEY || !TB_APP_SECRET) return { error: 'missing_tb_env' };
+  const params = cleanParams({ method, app_key: TB_APP_KEY, timestamp: tbTimestamp(), format: 'json', v: '2.0', sign_method: 'md5', ...biz });
+  params.sign = tbSign(params);
+  const errors = [];
+  for (const endpoint of [TB_API_FALLBACK_URL, TB_API_URL].filter((x, i, a) => x && a.indexOf(x) === i)) {
+    try { const raw = await postForm(endpoint, params, TB_TIMEOUT_MS); raw.__endpoint = endpoint; return raw; }
+    catch (e) { errors.push({ endpoint, code: e.code || '', message: e.message || String(e) }); }
   }
-  return out;
+  return { error: 'tb_request_failed', detail: errors };
 }
-function extractJdSku(input) { const p = parseProductLink(input); return p.platform === 'jd' ? p.id : ''; }
-function normalizePdd(item, source = 'real') {
-  const priceFen = Number(item.min_group_price || 0); const couponFen = Number(item.coupon_discount || item.extra_coupon_amount || 0); const finalFen = Math.max(0, priceFen - couponFen);
-  return { platform: 'pdd', source, goods_name: item.goods_name || '', goods_desc: item.goods_desc || '', brand_name: item.brand_name || '', shop_name: item.mall_name || '', goods_image_url: item.goods_image_url || '', goods_thumbnail_url: item.goods_thumbnail_url || item.goods_image_url || '', goods_sign: item.goods_sign, goods_id: item.goods_id, sales_tip: item.sales_tip || '', min_group_price_yuan: yuanFromFen(priceFen), coupon_discount_yuan: yuanFromFen(couponFen), coupon_price_yuan: yuanFromFen(finalFen), has_coupon: Boolean(item.has_coupon || couponFen > 0), unified_tags: [source.includes('url') ? '链接直查' : '', ...(item.unified_tags || [])].filter(Boolean), material_url: '', raw: item };
+function pickTbItems(raw) {
+  const direct = raw && raw.tbk_dg_material_optional_upgrade_response && raw.tbk_dg_material_optional_upgrade_response.result_list && raw.tbk_dg_material_optional_upgrade_response.result_list.map_data;
+  if (Array.isArray(direct)) return direct.slice(0, 20);
+  const out = []; findDeep(raw, x => x && (x.item_basic_info || x.price_promotion_info || x.publish_info || x.num_iid || x.item_id || x.title || x.short_title), 1000).forEach(x => out.push(x));
+  const seen = new Set();
+  return out.filter(x => { const b = x.item_basic_info || x.basic_info || x; const numIid = String(x.item_id || b.num_iid || b.item_id || ''); const titleKey = String(b.title || b.short_title || b.raw_title || x.title || ''); const key = numIid || titleKey || String(Math.random()); if (seen.has(key)) return false; seen.add(key); return true; }).slice(0, 20);
 }
-function pickJdImage(item) { const imageList = item.imageInfo?.imageList?.urlInfo || item.imageInfo?.imageList || []; const first = Array.isArray(imageList) ? imageList[0] : imageList; return httpsUrl(first?.url || item.imageInfo?.whiteImage || item.imgUrl || item.imageUrl || ''); }
-function pickJdCoupon(item) { const raw = item.couponInfo?.couponList?.coupon || item.couponInfo?.couponList || item.couponList || []; const list = asArray(raw); return list.find(c => Number(c.isBest) === 1) || list[0] || null; }
-function normalizeJd(item, source = 'real') {
-  const priceInfo = item.priceInfo || {}; const coupon = pickJdCoupon(item);
-  const price = Number(priceInfo.lowestPrice || priceInfo.price || priceInfo.jdPrice || item.unitPrice || item.wlUnitPrice || item.jdPrice || 0);
-  const finalPrice = Number(priceInfo.lowestCouponPrice || priceInfo.finalPrice || price || 0);
-  const skuId = item.skuId || item.sku_id || item.skuID || item.skuIdStr || '';
-  const materialUrl = item.materialUrl || item.link || item.itemUrl || item.url || (skuId ? `https://item.jd.com/${skuId}.html` : '');
-  const image = pickJdImage(item) || httpsUrl(item.imageUrl || item.imgUrl || '');
-  return { platform: 'jd', source, goods_name: item.skuName || item.goodsName || item.title || item.goods_name || '', goods_desc: item.skuName || item.goodsName || item.title || '', brand_name: item.brandName || item.shopInfo?.shopName || '京东', shop_name: item.shopInfo?.shopName || item.shopName || '', goods_image_url: image, goods_thumbnail_url: image, sku_id: skuId, goods_id: skuId, material_url: httpsUrl(materialUrl), coupon_url: coupon?.link || coupon?.couponUrl || '', sales_tip: item.inOrderCount30Days ? String(item.inOrderCount30Days) : (item.comments || ''), min_group_price_yuan: price, coupon_discount_yuan: Math.max(0, price - finalPrice), coupon_price_yuan: finalPrice, has_coupon: Boolean(coupon), unified_tags: [source.includes('fallback') ? '京粉精选' : '', source.includes('url') ? '链接直查' : '', coupon ? '有优惠券' : '', item.owner === 'g' ? '京东自营' : '', item.shopInfo?.shopName || item.shopName || ''].filter(Boolean), raw: item };
+function normalizeTb(item, source = 'tb.material.search') {
+  const basic = item.item_basic_info || item.basic_info || item; const promo = item.price_promotion_info || {}; const publish = item.publish_info || {};
+  const title = basic.title || basic.short_title || basic.raw_title || item.title || '淘宝商品';
+  const image = basic.pict_url || basic.pic_url || basic.white_image || item.pict_url || '';
+  const promoList = promo.final_promotion_path_list && promo.final_promotion_path_list.final_promotion_path_map_data;
+  const coupon = Array.isArray(promoList) && promoList[0] ? promoList[0] : {};
+  const price = Number(promo.final_promotion_price || item.final_promotion_price || basic.zk_final_price || basic.reserve_price || basic.price || 0);
+  const couponDiscount = Number(coupon.promotion_fee || 0);
+  const direct = httpsUrl(publish.click_url || publish.coupon_share_url || basic.item_url || item.item_url || item.detail_url || basic.detail_url || item.goods_url || basic.goods_url || item.url || '');
+  const url = direct || (title ? `https://s.m.taobao.com/h5?q=${encodeURIComponent(title)}` : '');
+  return { platform: 'tb', source, goods_name: title, goods_desc: basic.sub_title || title, brand_name: basic.brand_name || '', shop_name: basic.shop_title || basic.nick || '', goods_image_url: httpsUrl(image), goods_thumbnail_url: httpsUrl(image), goods_id: String(item.item_id || basic.num_iid || basic.item_id || ''), num_iid: String(item.item_id || basic.num_iid || basic.item_id || ''), sales_tip: String(basic.annual_vol || basic.tk_total_sales || basic.volume || ''), min_group_price_yuan: price, coupon_discount_yuan: couponDiscount, coupon_price_yuan: price, has_coupon: couponDiscount > 0, unified_tags: ['淘宝'], material_url: url, url, item_url: url, direct_buy_url: !!direct, buy_link_status: direct ? 'direct' : 'fallback_search', raw: item };
 }
-function parseJdQueryResult(result, key) { const wrapper = result[key] || result.jd_union_open_goods_query_responce || result.jd_union_open_goods_query_response || result.jd_union_open_goods_jingfen_query_responce || result.jd_union_open_goods_jingfen_query_response || result.jd_union_open_goods_promotiongoodsinfo_query_responce || result.jd_union_open_goods_promotiongoodsinfo_query_response || result; let qr = wrapper.queryResult || wrapper.result || wrapper; if (typeof qr === 'string') { try { qr = JSON.parse(qr); } catch (_) {} } return qr; }
-function extractJdGoodsList(qr) { const data = qr?.data; if (!data) return []; return asArray(data.goodsResp || data); }
-function isForbidden(qr) { return String(qr?.code || '') === '403' || /无访问权限/.test(String(qr?.message || '')); }
-async function searchJdItemBySku(skuId) {
-  const raw = await jdRequest('jd.union.open.goods.promotiongoodsinfo.query', { skuIds: String(skuId) });
-  const qr = parseJdQueryResult(raw, 'jd_union_open_goods_promotiongoodsinfo_query_responce');
-  if (qr?.code && String(qr.code) !== '200') throw { jd_error: qr, raw };
-  let data = qr?.data || qr; if (typeof data === 'string') { try { data = JSON.parse(data); } catch (_) {} }
-  const list = asArray(data).map(item => normalizeJd(item, 'url.promotiongoodsinfo'));
-  return { ok: true, platform: 'jd', source: 'url.promotiongoodsinfo', keyword: String(skuId), total_count: list.length, goods_list: list, raw };
+async function searchTb(q) {
+  if (!TB_ENABLED) return { ok: false, platform: 'tb', keyword: q, total_count: 0, goods_list: [], error: 'tb_disabled' };
+  if (!TB_ADZONE_ID) return { ok: false, platform: 'tb', keyword: q, total_count: 0, goods_list: [], error: 'missing_tb_adzone_id' };
+  const raw = await tbRequest(TB_SEARCH_METHOD, { adzone_id: TB_ADZONE_ID, q, page_size: 20, page_no: 1, platform: 2 });
+  const failed = raw && (raw.error_response || raw.error || raw.code);
+  const items = failed ? [] : pickTbItems(raw).map(x => normalizeTb(x, 'tb.material.search'));
+  return { ok: !failed, platform: 'tb', mode: 'keyword_search', source: 'tb.material.search', keyword: q, total_count: items.length, q, goods_list: items, raw };
 }
-async function searchPddItemByLink(parsed) {
-  if (parsed.id_type === 'ps') {
-    const resolved = await resolvePddPsLink(parsed.url);
-    if (resolved.goods_sign || resolved.goods_id) {
-      parsed = { ...parsed, id: resolved.goods_sign || resolved.goods_id, id_type: resolved.goods_sign ? 'goods_sign' : 'goods_id', ps_resolved: resolved };
-    } else if (resolved.title) {
-      return { ok: true, platform: 'pdd', source: 'ps.title_extracted', keyword: resolved.title, total_count: 0, goods_list: [], message: '拼多多 ps 链接未提取到商品ID，但已提取标题，可继续关键词比价。', ps_resolved: resolved };
-    } else {
-      return providerPlaceholder('pdd', '', '拼多多 ps 短分享链接无法还原商品ID；请复制商品标题搜索。', resolved);
-    }
-  }
-  if (!parsed.id) return providerPlaceholder('pdd', parsed.url, '拼多多链接已识别，但未提取到 goods_id/goods_sign。');
-  const biz = { pid: PDD_PID };
-  if (parsed.id_type === 'goods_sign') biz.goods_sign = parsed.id; else biz.goods_id_list = JSON.stringify([Number(parsed.id)]);
-  const raw = await pddRequest('pdd.ddk.goods.detail', biz);
-  if (raw.error_response || raw.error) throw raw;
-  const response = raw.goods_detail_response || raw;
-  const list = (response.goods_details || response.goods_list || []).map(item => normalizePdd(item, parsed.ps_resolved ? 'url.ps.detail' : 'url.detail'));
-  return { ok: true, platform: 'pdd', source: parsed.ps_resolved ? 'url.ps.detail' : 'url.detail', keyword: parsed.id, total_count: list.length, goods_list: list, raw, ps_resolved: parsed.ps_resolved };
+async function tbItem(input) {
+  const id = String(input || '').match(/\d{8,16}/)?.[0] || ''; if (!id) return { ok: false, platform: 'tb', error: 'missing_item_id' };
+  const fields = 'num_iid,title,pict_url,small_images,reserve_price,zk_final_price,user_type,provcity,item_url,nick,seller_id,volume,cat_name,shop_title';
+  const raw = await tbRequest(TB_ITEM_METHOD, { fields, num_iids: id, platform: 2 });
+  const items = pickTbItems(raw).map(x => normalizeTb(x, 'tb.item.info'));
+  return { ok: !(raw.error_response || raw.error || raw.code), platform: 'tb', mode: 'item_detail', item_id: id, goods: items[0] || null, goods_list: items, raw };
 }
-async function resolveLink(input) {
-  const parsed = parseProductLink(input);
-  if (!parsed.is_link) return { ok: true, is_link: false, keyword: cleanShareKeyword(input) || String(input || '').trim(), goods_list: [], parsed };
-  let exact = { ok: true, platform: parsed.platform, source: 'link_detected', goods_list: [], total_count: 0 };
+
+// ---------- Douyin (stub — not yet integrated) ----------
+// The previous code used pangolin-sdk-toutiao.com which is a Pangolin ad-SDK reporting
+// domain, not a CPS product search API. All sign attempts were against the wrong endpoint.
+// Next step: apply for 抖音精选联盟 (buyin.jinritemai.com) developer app, obtain
+// client_key + client_secret, implement OAuth2 access_token flow, then replace this stub.
+const DOUYIN_NOT_INTEGRATED = { ok: false, status: 'not_integrated', platform: 'douyin', message: '抖音接口待接入。请申请精选联盟开发者应用并完成 OAuth 授权后再接入。' };
+async function searchDouyin(_q) { return { ...DOUYIN_NOT_INTEGRATED, goods_list: [], total_count: 0 }; }
+async function douyinLink(_body) { return DOUYIN_NOT_INTEGRATED; }
+
+function providerStatus() {
+  return [
+    { platform: 'pdd', name: '拼多多', configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID), search: true, link: true, source: 'pdd.ddk' },
+    { platform: 'jd', name: '京东', configured: !!(JD_APP_KEY && JD_APP_SECRET), search: true, link: true, source: 'jd.union', note: '若返回403请在 union.jd.com 申请 goods.query 权限，或将 JD_SEARCH_METHOD 改为 jd.union.open.goods.jingfen.query' },
+    { platform: 'tb', name: '淘宝', configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID), enabled: TB_ENABLED, search: true, link: true, source: 'taobao TOP / alimama' },
+    { platform: 'douyin', name: '抖音', configured: false, enabled: false, search: false, link: false, status: 'not_integrated', note: '需申请精选联盟 OAuth 应用后接入' }
+  ];
+}
+
+async function parseInput(req, url) {
+  const rawBody = req.method === 'POST' ? await readBody(req) : '';
+  let body = {}; try { body = rawBody ? JSON.parse(rawBody) : {}; } catch { body = {}; }
+  const q = String(body.q || body.keyword || url.searchParams.get('q') || url.searchParams.get('keyword') || url.searchParams.get('kw') || '').trim();
+  const platform = String(body.platform || body.provider || url.searchParams.get('platform') || url.searchParams.get('provider') || '').trim();
+  return { body, q, platform };
+}
+
+async function handle(req, res) {
+  if (req.method === 'OPTIONS') return sendJson(res, 200, { ok: true });
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   try {
-    if (parsed.platform === 'jd' && parsed.id) exact = await searchJdItemBySku(parsed.id);
-    else if (parsed.platform === 'pdd') exact = await searchPddItemByLink(parsed);
-    else if (parsed.platform === 'tb') exact = providerPlaceholder('tb', parsed.keyword_hint || parsed.id || input, '淘宝链接已识别，真实商品详情 provider 待接入。');
-    else if (parsed.platform === 'douyin') exact = providerPlaceholder('douyin', parsed.keyword_hint || parsed.id || input, '抖音链接已识别，真实商品详情 provider 待接入。');
-  } catch (err) { exact = { ok: false, platform: parsed.platform, source: 'link_resolve_failed', error: err.error || err.message || 'resolve_failed', detail: err, goods_list: [] }; }
-  const first = exact.goods_list?.[0];
-  const seedKeyword = first?.goods_name || exact.keyword || exact.ps_resolved?.title || parsed.keyword_hint || cleanShareKeyword(input) || '';
-  return { ok: true, is_link: true, parsed, seed_keyword: seedKeyword, exact };
-}
-async function searchPdd(keyword, page = 1, pageSize = 20) {
-  const result = await pddRequest('pdd.ddk.goods.search', { keyword, page, page_size: pageSize, with_coupon: 'true', pid: PDD_PID, custom_parameters: PDD_CUSTOM_PARAMETERS });
-  if (result.error_response || result.error) throw result;
-  const response = result.goods_search_response || {};
-  return { ok: true, platform: 'pdd', source: 'real', keyword, total_count: response.total_count || 0, goods_list: (response.goods_list || []).map(x => normalizePdd(x, 'real')) };
-}
-async function searchJd(keyword, page = 1, pageSize = 20) {
-  const sku = extractJdSku(keyword); if (sku) return searchJdItemBySku(sku);
-  const goodsRaw = await jdRequest('jd.union.open.goods.query', { goodsReqDTO: { keyword, pageIndex: page, pageSize: Math.min(pageSize, 30), sceneId: 1, isCoupon: 1, hasBestCoupon: 1, pid: JD_PID } });
-  let qr = parseJdQueryResult(goodsRaw, 'jd_union_open_goods_query_responce'); let source = 'goods.query'; let raw = goodsRaw;
-  if (isForbidden(qr)) { const jfRaw = await jdRequest('jd.union.open.goods.jingfen.query', { goodsReq: { eliteId: 1, pageIndex: page, pageSize: Math.min(pageSize, 30), pid: JD_PID } }); qr = parseJdQueryResult(jfRaw, 'jd_union_open_goods_jingfen_query_responce'); source = 'jingfen.query.fallback'; raw = { goods_query_error: parseJdQueryResult(goodsRaw, 'jd_union_open_goods_query_responce'), jingfen: jfRaw }; }
-  if (qr?.code && String(qr.code) !== '200') throw { jd_error: qr, raw };
-  const list = extractJdGoodsList(qr).map(item => normalizeJd(item, source));
-  return { ok: true, platform: 'jd', source, keyword, total_count: Number(qr?.totalCount || list.length), goods_list: list, raw };
-}
-function providerPlaceholder(platform, keyword, message, detail) { return { ok: true, platform, source: 'provider_placeholder', keyword, total_count: 0, goods_list: [], message: message || `${platform === 'tb' ? '淘宝' : platform === 'douyin' ? '抖音' : platform}真实接口尚未接入，当前只保留 provider 骨架，不返回假商品。`, detail }; }
-function searchMock(platform, keyword) { return { ok: true, platform, source: 'mock', keyword, total_count: 0, goods_list: [], message: 'mock disabled in compact server.' }; }
-async function searchTaobao(keyword) { return providerPlaceholder('tb', keyword); }
-async function searchDouyin(keyword) { return providerPlaceholder('douyin', keyword); }
-async function unifiedSearch(inputKeyword, platforms, page, pageSize, useMock = false) {
-  const linkResolved = useMock ? null : await resolveLink(inputKeyword);
-  const keyword = linkResolved?.is_link ? linkResolved.seed_keyword : (cleanShareKeyword(inputKeyword) || inputKeyword);
-  if (!keyword) return { ok: true, input: inputKeyword, keyword: '', link: linkResolved?.is_link ? linkResolved : null, mock: Boolean(useMock), platforms, total_count: 0, providers: [linkResolved?.exact].filter(Boolean).map(({ ok, platform, source, total_count, error, message }) => ({ ok, platform, source, total_count: total_count || 0, error, message })), goods_list: [], message: '未能从链接中解析商品标题或商品ID，请复制商品标题搜索。' };
-  const wanted = platforms.includes('all') ? ['pdd', 'jd', 'tb', 'douyin'] : platforms;
-  const tasks = wanted.map(async platform => {
-    const p = platform === 'taobao' ? 'tb' : platform === 'dy' ? 'douyin' : platform;
-    try { if (useMock) return searchMock(p, keyword); if (p === 'pdd') return await searchPdd(keyword, page, pageSize); if (p === 'jd') return await searchJd(keyword, page, pageSize); if (p === 'tb') return await searchTaobao(keyword); if (p === 'douyin') return await searchDouyin(keyword); return { ok: false, platform: p, error: 'unknown_platform', goods_list: [] }; }
-    catch (err) { return { ok: false, platform: p, error: err.error || err.message || 'provider_error', detail: err, goods_list: [] }; }
-  });
-  const results = await Promise.all(tasks);
-  let goods = results.flatMap(r => r.goods_list || []);
-  if (linkResolved?.exact?.goods_list?.length) {
-    const seen = new Set(goods.map(g => `${g.platform}:${g.goods_id || g.sku_id || g.goods_sign || g.goods_name}`));
-    for (const x of linkResolved.exact.goods_list.map(x => ({ ...x, source: `${x.source}.exact_input` }))) { const key = `${x.platform}:${x.goods_id || x.sku_id || x.goods_sign || x.goods_name}`; if (!seen.has(key)) goods.unshift(x); }
-  }
-  return { ok: true, input: inputKeyword, keyword, link: linkResolved?.is_link ? linkResolved : null, mock: Boolean(useMock), platforms: wanted, total_count: goods.length, providers: results.map(({ ok, platform, source, total_count, error, message }) => ({ ok, platform, source, total_count: total_count || 0, error, message })), goods_list: goods };
-}
-
-function sendJson(res, status, data) { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' }); res.end(JSON.stringify(data, null, 2)); }
-function readBody(req) { return new Promise(resolve => { let body = ''; req.on('data', c => body += c); req.on('end', () => resolve(body)); }); }
-function findArrayDeep(value, keys = []) { if (!value || typeof value !== 'object') return []; for (const key of keys) if (Array.isArray(value[key])) return value[key]; for (const child of Object.values(value)) { if (Array.isArray(child)) return child; if (child && typeof child === 'object') { const found = findArrayDeep(child, keys); if (found.length) return found; } } return []; }
-
-const server = http.createServer(async (req, res) => {
-  try {
-    if (req.method === 'OPTIONS') return sendJson(res, 200, { ok: true });
-    const url = new URL(req.url, `http://${req.headers.host}`);
-    const useMock = url.searchParams.get('mock') === '1' || url.searchParams.get('mock') === 'true';
-    if (url.pathname === '/' || url.pathname === '/health') return sendJson(res, 200, { ok: true, name: '价比比 API', message: '价比比 API 已启动', env: { has_client_id: Boolean(PDD_CLIENT_ID), has_client_secret: Boolean(PDD_CLIENT_SECRET), has_pid: Boolean(PDD_PID), has_jd_app_key: Boolean(JD_APP_KEY), has_jd_app_secret: Boolean(JD_APP_SECRET), has_jd_position_id: Boolean(JD_POSITION_ID), tb_provider: 'placeholder_no_fake_goods', douyin_provider: 'placeholder_no_fake_goods', mock_mode: 'use &mock=1 explicitly', link_resolve: ['jd', 'pdd', 'tb', 'douyin'], pdd_ps_links: 'server_expand_enabled', share_text_clean: true } });
-    if (url.pathname === '/api/search' && req.method === 'GET') { const keyword = url.searchParams.get('keyword') || '小米充电宝'; const platforms = (url.searchParams.get('platform') || 'all').split(',').map(x => x.trim()).filter(Boolean); const page = Number(url.searchParams.get('page') || '1'); const pageSize = Number(url.searchParams.get('page_size') || '20'); return sendJson(res, 200, await unifiedSearch(keyword, platforms, page, pageSize, useMock)); }
-    if (url.pathname === '/api/resolve' && req.method === 'GET') return sendJson(res, 200, await resolveLink(url.searchParams.get('input') || ''));
-    if (url.pathname === '/api/pdd/resolve-ps' && req.method === 'GET') return sendJson(res, 200, await resolvePddPsLink(url.searchParams.get('url') || url.searchParams.get('input') || ''));
-    if (url.pathname === '/api/pdd/search' && req.method === 'GET') return sendJson(res, 200, useMock ? searchMock('pdd', url.searchParams.get('keyword') || '充电宝') : await searchPdd(cleanShareKeyword(url.searchParams.get('keyword')) || url.searchParams.get('keyword') || '充电宝', Number(url.searchParams.get('page') || '1'), Number(url.searchParams.get('page_size') || '20')));
-    if (url.pathname === '/api/jd/search' && req.method === 'GET') return sendJson(res, 200, useMock ? searchMock('jd', url.searchParams.get('keyword') || '充电宝') : await searchJd(cleanShareKeyword(url.searchParams.get('keyword')) || url.searchParams.get('keyword') || '充电宝', Number(url.searchParams.get('page') || '1'), Number(url.searchParams.get('page_size') || '20')));
-    if (url.pathname === '/api/tb/search' && req.method === 'GET') return sendJson(res, 200, useMock ? searchMock('tb', url.searchParams.get('keyword') || '小米充电宝') : await searchTaobao(cleanShareKeyword(url.searchParams.get('keyword')) || url.searchParams.get('keyword') || '小米充电宝'));
-    if (url.pathname === '/api/douyin/search' && req.method === 'GET') return sendJson(res, 200, useMock ? searchMock('douyin', url.searchParams.get('keyword') || '小米充电宝') : await searchDouyin(cleanShareKeyword(url.searchParams.get('keyword')) || url.searchParams.get('keyword') || '小米充电宝'));
-    if (url.pathname === '/api/pdd/link' && req.method === 'POST') {
-      const rawBody = await readBody(req); let body = {}; try { body = rawBody ? JSON.parse(rawBody) : {}; } catch (_) {}
-      const goodsSign = body.goods_sign || body.goodsSign || url.searchParams.get('goods_sign');
-      if (!goodsSign) return sendJson(res, 400, { error: 'missing_goods_sign', message: 'goods_sign is required' });
-      const result = await pddRequest('pdd.ddk.goods.promotion.url.generate', { p_id: PDD_PID, goods_sign_list: JSON.stringify([goodsSign]), generate_short_url: 'true', generate_mobile: 'true', generate_schema_url: 'true', generate_we_app: 'true', custom_parameters: PDD_CUSTOM_PARAMETERS });
-      if (result.error_response || result.error) return sendJson(res, 400, result);
-      const item = result.goods_promotion_url_generate_response?.goods_promotion_url_list?.[0] || {};
-      return sendJson(res, 200, { ok: true, platform: 'pdd', mobile_short_url: item.mobile_short_url, short_url: item.short_url, mobile_url: item.mobile_url, url: item.url, schema_url: item.schema_url, we_app_info: item.we_app_info, raw: result });
+    if (url.pathname.startsWith('/api/sandbox/') || url.pathname === '/api/sandbox/session') {
+      if (!sandboxMod) return sendJson(res, 501, { ok: false, error: 'sandbox_module_not_loaded' });
+      return sandboxMod.handleSandbox(req, res, url);
     }
-    if (url.pathname === '/api/jd/link' && req.method === 'POST') {
-      const rawBody = await readBody(req); let body = {}; try { body = rawBody ? JSON.parse(rawBody) : {}; } catch (_) {}
-      const skuId = body.sku_id || body.skuId || url.searchParams.get('sku_id');
-      const materialId = body.material_url || body.materialId || body.url || (skuId ? `https://item.jd.com/${skuId}.html` : '');
-      const couponUrl = body.coupon_url || body.couponUrl || '';
-      if (!materialId) return sendJson(res, 400, { error: 'missing_material_id', message: 'material_url or sku_id is required' });
-      const result = await jdRequest(JD_PROMOTION_METHOD, { promotionCodeReq: cleanParams({ materialId, couponUrl, siteId: JD_SITE_ID, positionId: JD_POSITION_ID }) });
-      if (result.error_response || result.error || result.code) return sendJson(res, 400, result);
-      const clickURL = result.jd_union_open_promotion_common_get_response?.result?.clickURL || result.result?.clickURL || findArrayDeep(result, ['data'])?.[0]?.clickURL || '';
-      return sendJson(res, 200, { ok: true, platform: 'jd', click_url: clickURL, url: clickURL, raw: result });
+    if (url.pathname === '/' || url.pathname === '/health') {
+      const h = { ok: true, name: '价比比 API', runtime: 'server', version: '9.0', pdd_configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID), jd_configured: !!(JD_APP_KEY && JD_APP_SECRET), tb_enabled: TB_ENABLED, tb_configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID), douyin_status: 'not_integrated', provider_status: '/api/providers/status', compare_api: '/api/compare?q=小米充电宝' };
+      if (sandboxMod) Object.assign(h, sandboxMod.sandboxHealthInfo());
+      return sendJson(res, 200, h);
     }
-    if ((url.pathname === '/api/tb/link' || url.pathname === '/api/douyin/link') && req.method === 'POST') return sendJson(res, 501, { ok: false, error: 'provider_not_connected', message: '真实 provider 尚未接入，不提供假转链。' });
+    if (url.pathname === '/api/providers/status') return sendJson(res, 200, { ok: true, runtime: 'server', version: '9.0', providers: providerStatus() });
+
+    if (url.pathname === '/api/diag') {
+      const q = (url.searchParams.get('q') || url.searchParams.get('keyword') || '').trim();
+      if (!q) return sendJson(res, 400, { error: 'missing_keyword', hint: 'add ?q=小米充电宝' });
+      const posId = Number(JD_POSITION_ID) || undefined;
+      const jdGoodsReq = { keyword: q, pageIndex: 1, pageSize: 10 };
+      if (posId) jdGoodsReq.positionId = posId;
+      const [jdR, pddR] = await Promise.allSettled([
+        jdRequest(JD_SEARCH_METHOD, { goodsReq: jdGoodsReq }),
+        pddRequest('pdd.ddk.goods.search', { keyword: q, pid: PDD_PID, page: 1, page_size: 10 })
+      ]);
+      return sendJson(res, 200, {
+        ok: true, q, runtime: 'server', version: '9.0',
+        jd: jdR.status === 'fulfilled' ? jdR.value : { fetch_error: String(jdR.reason) },
+        douyin: { status: 'not_integrated' },
+        pdd: pddR.status === 'fulfilled' ? { total_count: (pddR.value.goods_search_response || {}).total_count, goods_count: ((pddR.value.goods_search_response || {}).goods_list || []).length, ok: true } : { fetch_error: String(pddR.reason) }
+      });
+    }
+
+    const { body, q, platform } = await parseInput(req, url);
+    if (url.pathname === '/api/compare') {
+      if (!q) return sendJson(res, 400, { ok: false, error: 'missing_keyword' });
+      const providerErrors = {};
+      const runProvider = async (name, fn) => {
+        try { return await fn(q); }
+        catch (e) {
+          providerErrors[name] = e.message || String(e);
+          return { ok: false, platform: name, keyword: q, total_count: 0, goods_list: [], error: providerErrors[name] };
+        }
+      };
+      const [pdd, jd, tb] = await Promise.all([
+        runProvider('pdd', searchPdd),
+        runProvider('jd', searchJd),
+        runProvider('tb', searchTb)
+      ]);
+      const providers = { pdd, jd, tb, douyin: { ...DOUYIN_NOT_INTEGRATED, goods_list: [], total_count: 0 } };
+      const counts = { pdd: pdd.goods_list?.length || 0, jd: jd.goods_list?.length || 0, tb: tb.goods_list?.length || 0, douyin: 0 };
+      return sendJson(res, 200, {
+        ok: true, runtime: 'server', version: '9.0', q, counts, provider_errors: providerErrors, providers,
+        goods_list: [...(pdd.goods_list || []), ...(jd.goods_list || []), ...(tb.goods_list || [])]
+      });
+    }
+    if (url.pathname === '/api/douyin/search') return sendJson(res, 200, { ...DOUYIN_NOT_INTEGRATED, goods_list: [], total_count: 0 });
+    if (url.pathname === '/api/douyin/link') return sendJson(res, 200, DOUYIN_NOT_INTEGRATED);
+    if (url.pathname === '/api/tb/search' || url.pathname === '/api/tb/real-search') { if (!q) return sendJson(res, 400, { ok: false, platform: 'tb', error: 'missing_keyword' }); return sendJson(res, 200, await searchTb(q)); }
+    if (url.pathname === '/api/tb/item' || url.pathname === '/api/tb/link') { const input = body.item_id || body.num_iid || body.id || body.url || body.material_url || url.searchParams.get('item_id') || url.searchParams.get('num_iid') || url.searchParams.get('id') || url.searchParams.get('url') || ''; return sendJson(res, 200, await tbItem(input)); }
+    if (url.pathname === '/api/pdd/link') return sendJson(res, 200, await pddLink({ ...body, goods_sign: body.goods_sign || url.searchParams.get('goods_sign'), goods_id: body.goods_id || url.searchParams.get('goods_id') }));
+    if (url.pathname === '/api/jd/link') return sendJson(res, 200, await jdLink({ ...body, sku_id: body.sku_id || url.searchParams.get('sku_id'), material_url: body.material_url || url.searchParams.get('material_url') }));
+    if (url.pathname === '/api/search' || url.pathname === '/api/search.json' || url.pathname === '/api/provider/search') {
+      if (!q) return sendJson(res, 400, { ok: false, error: 'missing_keyword' });
+      let result;
+      if (platform === 'tb') result = await searchTb(q);
+      else if (platform === 'pdd') result = await searchPdd(q);
+      else if (platform === 'jd') result = await searchJd(q);
+      else if (platform === 'douyin' || platform === 'dy') result = { ...DOUYIN_NOT_INTEGRATED, goods_list: [], total_count: 0 };
+      else {
+        const settled = await Promise.allSettled([searchPdd(q), searchJd(q), searchTb(q)]);
+        const providers = settled.map(x => x.status === 'fulfilled' ? x.value : { ok: false, error: x.reason && x.reason.message || String(x.reason) });
+        const goods = providers.flatMap(x => x.goods_list || []);
+        result = { ok: true, q, keyword: q, providers, total_count: goods.length, best: cheapest(goods), goods_list: sortByPrice(goods) };
+      }
+      return sendJson(res, 200, result);
+    }
     return sendJson(res, 404, { error: 'not_found', path: url.pathname });
-  } catch (err) { return sendJson(res, 500, { error: 'server_error', message: err.message || String(err), detail: err }); }
-});
-server.listen(PORT, '0.0.0.0', () => console.log(`Jiabibi API running on port ${PORT}`));
+  } catch (e) {
+    return sendJson(res, 500, { ok: false, error: 'server_error', message: e.message || String(e), stack: process.env.NODE_ENV === 'production' ? undefined : e.stack });
+  }
+}
+
+http.createServer(handle).listen(PORT, () => console.log('Jiabibi server v9.0 listening on', PORT));
