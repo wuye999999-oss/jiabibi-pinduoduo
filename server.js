@@ -1,6 +1,5 @@
-// server.js v9.0
-// Consolidated entry point. JD / PDD / Taobao active. Douyin: stub (not yet integrated).
-// Previous entry was server8.js (patch loader over server7.js) — now merged inline.
+// server.js v9.1
+// Entry point: PDD / JD / Taobao active. Douyin: OAuth2 精选联盟 framework.
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
@@ -29,6 +28,9 @@ function sendJson(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type, Authorization', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS,DELETE' });
   res.end(JSON.stringify(body, null, 2));
 }
+function sendRedirect(res, location) {
+  res.writeHead(302, { Location: location }); res.end();
+}
 function readBody(req) {
   return new Promise(resolve => {
     let data = '';
@@ -41,7 +43,7 @@ function postForm(endpoint, params, timeoutMs = 9000) {
     const body = new URLSearchParams(params).toString();
     let u; try { u = new URL(endpoint); } catch (e) { return reject(e); }
     const cli = u.protocol === 'http:' ? http : https;
-    const req = cli.request({ method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs, headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/9.0' } }, res => {
+    const req = cli.request({ method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs, headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/9.1' } }, res => {
       let data = ''; res.setEncoding('utf8');
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('non_json ' + data.slice(0, 200))); } });
@@ -55,7 +57,7 @@ function postJson(endpoint, payload, timeoutMs = 9000) {
     const body = JSON.stringify(payload || {});
     let u; try { u = new URL(endpoint); } catch (e) { return reject(e); }
     const cli = u.protocol === 'http:' ? http : https;
-    const req = cli.request({ method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs, headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/9.0' } }, res => {
+    const req = cli.request({ method: 'POST', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: timeoutMs, headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'User-Agent': 'Jiabibi/9.1' } }, res => {
       let data = ''; res.setEncoding('utf8');
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('non_json ' + data.slice(0, 200))); } });
@@ -110,9 +112,8 @@ async function pddLink(body) {
 }
 
 // ---------- JD ----------
-// NOTE: JD_POSITION_ID and JD_PID must be set via Render env vars. No hardcoded defaults.
-// If jd.union.open.goods.query returns 403/permission errors, either apply for the interface
-// at union.jd.com or switch JD_SEARCH_METHOD to jd.union.open.goods.jingfen.query.
+// JD_POSITION_ID and JD_PID must be set via Render env vars — no hardcoded defaults.
+// If goods.query returns 403, set JD_SEARCH_METHOD=jd.union.open.goods.jingfen.query
 const JD_API_URL = envFirst('JD_API_URL') || 'https://api.jd.com/routerjson';
 const JD_APP_KEY = envFirst('JD_APP_KEY', 'JD_APPKEY', 'APP_KEY');
 const JD_APP_SECRET = envFirst('JD_APP_SECRET', 'JD_APPSECRET', 'APP_SECRET');
@@ -237,21 +238,239 @@ async function tbItem(input) {
   return { ok: !(raw.error_response || raw.error || raw.code), platform: 'tb', mode: 'item_detail', item_id: id, goods: items[0] || null, goods_list: items, raw };
 }
 
-// ---------- Douyin (stub — not yet integrated) ----------
-// The previous code used pangolin-sdk-toutiao.com which is a Pangolin ad-SDK reporting
-// domain, not a CPS product search API. All sign attempts were against the wrong endpoint.
-// Next step: apply for 抖音精选联盟 (buyin.jinritemai.com) developer app, obtain
-// client_key + client_secret, implement OAuth2 access_token flow, then replace this stub.
-const DOUYIN_NOT_INTEGRATED = { ok: false, status: 'not_integrated', platform: 'douyin', message: '抖音接口待接入。请申请精选联盟开发者应用并完成 OAuth 授权后再接入。' };
-async function searchDouyin(_q) { return { ...DOUYIN_NOT_INTEGRATED, goods_list: [], total_count: 0 }; }
-async function douyinLink(_body) { return DOUYIN_NOT_INTEGRATED; }
+// ---------- Douyin 精选联盟 ----------
+// 接入平台：buyin.jinritemai.com（推客/达人，不是穿山甲广告 SDK）
+//
+// Render 必填环境变量：
+//   DOUYIN_ENABLED        → true 才启用（默认 false，可安全部署但不调用）
+//   DOUYIN_CLIENT_KEY     → 精选联盟开发者应用 client_key
+//   DOUYIN_CLIENT_SECRET  → 精选联盟开发者应用 client_secret
+//   DOUYIN_REDIRECT_URI   → OAuth 回调地址，填 https://<your-render-domain>/api/douyin/oauth-callback
+//
+// OAuth 完成后自动写入内存，同时打印到 Render 日志，再手动贴入以下环境变量持久化：
+//   DOUYIN_ACCESS_TOKEN   → OAuth access_token（15 天有效，refresh_token 可自动续期）
+//   DOUYIN_REFRESH_TOKEN  → OAuth refresh_token
+//   DOUYIN_OPEN_ID        → 授权用户的 open_id
+//
+// OAuth 流程：
+//   1. GET /api/douyin/oauth-start  → 返回授权链接，在浏览器里打开
+//   2. 抖音授权后回调 /api/douyin/oauth-callback?code=xxx
+//   3. 服务端自动换取 token，打印至日志，并写入内存
+//   4. 将日志里的 token 复制到 Render 环境变量，之后重启也能用
+
+const DOUYIN_OPEN_API = 'https://open.douyin.com';
+const DY_CLIENT_KEY    = envFirst('DOUYIN_CLIENT_KEY');
+const DY_CLIENT_SECRET = envFirst('DOUYIN_CLIENT_SECRET');
+const DY_REDIRECT_URI  = envFirst('DOUYIN_REDIRECT_URI');
+const DOUYIN_ENABLED     = String(process.env.DOUYIN_ENABLED || '').toLowerCase() === 'true';
+const DOUYIN_CONFIGURED  = !!(DY_CLIENT_KEY && DY_CLIENT_SECRET);
+
+// 进程内 token 缓存（重启后从环境变量重新读取）
+const dyToken = {
+  access_token:  envFirst('DOUYIN_ACCESS_TOKEN'),
+  refresh_token: envFirst('DOUYIN_REFRESH_TOKEN'),
+  open_id:       envFirst('DOUYIN_OPEN_ID'),
+  expires_at: 0
+};
+
+function dyHasToken() { return !!dyToken.access_token; }
+
+// 用 code 换取 access_token（OAuth 第一步完成后调用）
+async function dyExchangeCode(code) {
+  const raw = await postForm(`${DOUYIN_OPEN_API}/oauth/access_token/`, {
+    client_key: DY_CLIENT_KEY, client_secret: DY_CLIENT_SECRET,
+    code, grant_type: 'authorization_code'
+  });
+  const d = raw && raw.data;
+  if (d && d.access_token) {
+    dyToken.access_token  = d.access_token;
+    dyToken.refresh_token = d.refresh_token;
+    dyToken.open_id       = d.open_id;
+    dyToken.expires_at    = Date.now() + (Number(d.expires_in) || 1296000) * 1000;
+    // 打印到 Render 日志，方便复制贴入环境变量持久化
+    console.log('[Douyin OAuth] Token obtained. Paste these into Render env vars:');
+    console.log(`  DOUYIN_ACCESS_TOKEN=${d.access_token}`);
+    console.log(`  DOUYIN_REFRESH_TOKEN=${d.refresh_token}`);
+    console.log(`  DOUYIN_OPEN_ID=${d.open_id}`);
+  }
+  return raw;
+}
+
+// 用 refresh_token 续期 access_token（15 天有效期到期前自动触发）
+async function dyRefreshToken() {
+  if (!dyToken.refresh_token) return false;
+  try {
+    const raw = await postForm(`${DOUYIN_OPEN_API}/oauth/refresh_token/`, {
+      client_key: DY_CLIENT_KEY, grant_type: 'refresh_token',
+      refresh_token: dyToken.refresh_token
+    });
+    const d = raw && raw.data;
+    if (d && d.access_token) {
+      dyToken.access_token  = d.access_token;
+      dyToken.refresh_token = d.refresh_token || dyToken.refresh_token;
+      dyToken.open_id       = d.open_id || dyToken.open_id;
+      dyToken.expires_at    = Date.now() + (Number(d.expires_in) || 1296000) * 1000;
+      console.log('[Douyin OAuth] Token refreshed. Update DOUYIN_ACCESS_TOKEN in Render env vars:');
+      console.log(`  DOUYIN_ACCESS_TOKEN=${d.access_token}`);
+      return true;
+    }
+  } catch (e) { console.error('[Douyin OAuth] Refresh failed:', e.message); }
+  return false;
+}
+
+// 确保 token 有效（距离过期不足 1 小时则触发刷新）
+async function dyEnsureToken() {
+  if (!dyHasToken()) {
+    return { ok: false, error: 'missing_access_token',
+      hint: 'Visit /api/douyin/oauth-start to begin OAuth, or set DOUYIN_ACCESS_TOKEN env var' };
+  }
+  if (dyToken.expires_at && Date.now() > dyToken.expires_at - 3600000) {
+    const refreshed = await dyRefreshToken();
+    if (!refreshed) return { ok: false, error: 'token_expired_refresh_failed',
+      hint: 'Re-do OAuth at /api/douyin/oauth-start' };
+  }
+  return { ok: true };
+}
+
+// 带 Access-Token + client-key 头的 GET 请求
+function dyGet(path, params = {}, timeoutMs = 9000) {
+  return new Promise((resolve, reject) => {
+    const qs = new URLSearchParams(cleanParams(params)).toString();
+    const fullPath = path + (qs ? '?' + qs : '');
+    const req = https.request({
+      method: 'GET', hostname: 'open.douyin.com', path: fullPath, port: 443, timeout: timeoutMs,
+      headers: { 'Access-Token': dyToken.access_token, 'client-key': DY_CLIENT_KEY, 'User-Agent': 'Jiabibi/9.1' }
+    }, res => {
+      let data = ''; res.setEncoding('utf8');
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('non_json ' + data.slice(0, 200))); } });
+    });
+    req.on('timeout', () => req.destroy(Object.assign(new Error('request_timeout'), { code: 'ETIMEDOUT' })));
+    req.on('error', reject); req.end();
+  });
+}
+
+// 带 Access-Token + client-key 头的 POST 请求
+function dyPost(path, payload, timeoutMs = 9000) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify(payload || {});
+    const req = https.request({
+      method: 'POST', hostname: 'open.douyin.com', path, port: 443, timeout: timeoutMs,
+      headers: {
+        'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body),
+        'Access-Token': dyToken.access_token, 'client-key': DY_CLIENT_KEY, 'User-Agent': 'Jiabibi/9.1'
+      }
+    }, res => {
+      let data = ''; res.setEncoding('utf8');
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('non_json ' + data.slice(0, 200))); } });
+    });
+    req.on('timeout', () => req.destroy(Object.assign(new Error('request_timeout'), { code: 'ETIMEDOUT' })));
+    req.on('error', reject); req.write(body); req.end();
+  });
+}
+
+function normalizeDouyinProduct(p) {
+  const priceFen    = Number(p.market_price || p.price || 0);
+  const discountFen = Number(p.coupon_amount || 0);
+  const finalFen    = Math.max(0, priceFen - discountFen) || priceFen;
+  const image = p.cover || (Array.isArray(p.images) && p.images[0]) || '';
+  const url   = p.product_url || p.schema_url || '';
+  return {
+    platform: 'douyin', source: 'douyin.jxlm.product.search',
+    goods_name: p.title || p.product_name || '抖音商品',
+    goods_desc: p.desc || p.title || '',
+    brand_name: p.brand || '',
+    shop_name:  p.shop_name || '',
+    goods_image_url:      httpsUrl(image),
+    goods_thumbnail_url:  httpsUrl(image),
+    goods_id:   String(p.product_id || ''),
+    product_id: String(p.product_id || ''),
+    sales_tip:  p.sold_count ? String(p.sold_count) + '销量' : '',
+    min_group_price_yuan: yuanFromFen(priceFen),
+    coupon_discount_yuan: yuanFromFen(discountFen),
+    coupon_price_yuan:    yuanFromFen(finalFen),
+    has_coupon: discountFen > 0,
+    commission_ratio: p.cos_ratio || 0,
+    unified_tags: ['抖音'],
+    material_url: url, url, raw: p
+  };
+}
+
+async function searchDouyin(q, page = 1, pageSize = 20) {
+  if (!DOUYIN_ENABLED) {
+    return { ok: false, platform: 'douyin', keyword: q, total_count: 0, goods_list: [],
+      status: 'disabled', hint: 'Set DOUYIN_ENABLED=true in Render env vars' };
+  }
+  if (!DOUYIN_CONFIGURED) {
+    return { ok: false, platform: 'douyin', keyword: q, total_count: 0, goods_list: [],
+      status: 'not_configured', hint: 'Set DOUYIN_CLIENT_KEY and DOUYIN_CLIENT_SECRET in Render env vars' };
+  }
+  const tokenCheck = await dyEnsureToken();
+  if (!tokenCheck.ok) return { ok: false, platform: 'douyin', keyword: q, total_count: 0, goods_list: [], ...tokenCheck };
+  try {
+    const raw = await dyGet('/buyin/openapi/v1/product/search/', {
+      keyword: q, page: String(Number(page) || 1),
+      page_size: String(Math.min(Number(pageSize) || 20, 50))
+    });
+    const ok = raw && (raw.err_no === 0 || raw.err_no === undefined && !raw.err_tips);
+    const products = asArray((raw && raw.data && (raw.data.products || raw.data.list)) || raw.products || []);
+    return {
+      ok: ok && products.length > 0,
+      platform: 'douyin', source: 'douyin.jxlm.product.search', keyword: q,
+      total_count: (raw && raw.data && raw.data.total) || products.length,
+      goods_list: ok ? products.map(p => normalizeDouyinProduct(p)) : [],
+      dy_err_no: raw && raw.err_no,
+      dy_err_tips: raw && raw.err_tips,
+      raw
+    };
+  } catch (e) {
+    return { ok: false, platform: 'douyin', keyword: q, total_count: 0, goods_list: [], error: e.message };
+  }
+}
+
+async function douyinLink(body) {
+  if (!DOUYIN_ENABLED || !DOUYIN_CONFIGURED) {
+    return { ok: false, platform: 'douyin', status: DOUYIN_CONFIGURED ? 'disabled' : 'not_configured' };
+  }
+  const tokenCheck = await dyEnsureToken();
+  if (!tokenCheck.ok) return { ok: false, platform: 'douyin', ...tokenCheck };
+  const productId  = String(body.product_id || body.goods_id || '');
+  const productUrl = body.product_url || body.material_url || body.url || '';
+  if (!productId && !productUrl) return { ok: false, platform: 'douyin', error: 'missing_product_id_or_url' };
+  try {
+    const payload = { external_info: body.external_info || 'jiabibi' };
+    if (productId) payload.product_id = productId;
+    if (productUrl) payload.product_url = productUrl;
+    const raw = await dyPost('/buyin/openapi/v1/product/url/generate/', payload);
+    const ok = raw && raw.err_no === 0;
+    const data = (raw && raw.data) || {};
+    const url = data.promotion_url || data.link || data.url || '';
+    return { ok: ok && !!url, platform: 'douyin', url, material_url: url, raw };
+  } catch (e) {
+    return { ok: false, platform: 'douyin', error: e.message };
+  }
+}
+
+function douyinStatusInfo() {
+  return {
+    enabled: DOUYIN_ENABLED,
+    configured: DOUYIN_CONFIGURED,
+    has_token: dyHasToken(),
+    open_id: dyToken.open_id || '',
+    token_expires_at: dyToken.expires_at ? new Date(dyToken.expires_at).toISOString() : 'unknown',
+    oauth_start: '/api/douyin/oauth-start',
+    platform: 'douyin.jxlm'
+  };
+}
 
 function providerStatus() {
   return [
     { platform: 'pdd', name: '拼多多', configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID), search: true, link: true, source: 'pdd.ddk' },
-    { platform: 'jd', name: '京东', configured: !!(JD_APP_KEY && JD_APP_SECRET), search: true, link: true, source: 'jd.union', note: '若返回403请在 union.jd.com 申请 goods.query 权限，或将 JD_SEARCH_METHOD 改为 jd.union.open.goods.jingfen.query' },
-    { platform: 'tb', name: '淘宝', configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID), enabled: TB_ENABLED, search: true, link: true, source: 'taobao TOP / alimama' },
-    { platform: 'douyin', name: '抖音', configured: false, enabled: false, search: false, link: false, status: 'not_integrated', note: '需申请精选联盟 OAuth 应用后接入' }
+    { platform: 'jd',  name: '京东',  configured: !!(JD_APP_KEY && JD_APP_SECRET), search: true, link: true, source: 'jd.union',
+      note: '若403请在 union.jd.com 申请权限，或设 JD_SEARCH_METHOD=jd.union.open.goods.jingfen.query' },
+    { platform: 'tb',  name: '淘宝',  configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID), enabled: TB_ENABLED, search: true, link: true, source: 'taobao TOP / alimama' },
+    { platform: 'douyin', name: '抖音', ...douyinStatusInfo(), search: DOUYIN_ENABLED && DOUYIN_CONFIGURED && dyHasToken(), link: DOUYIN_ENABLED && DOUYIN_CONFIGURED && dyHasToken(), source: 'open.douyin.com / buyin' }
   ];
 }
 
@@ -271,12 +490,60 @@ async function handle(req, res) {
       if (!sandboxMod) return sendJson(res, 501, { ok: false, error: 'sandbox_module_not_loaded' });
       return sandboxMod.handleSandbox(req, res, url);
     }
+
     if (url.pathname === '/' || url.pathname === '/health') {
-      const h = { ok: true, name: '价比比 API', runtime: 'server', version: '9.0', pdd_configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID), jd_configured: !!(JD_APP_KEY && JD_APP_SECRET), tb_enabled: TB_ENABLED, tb_configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID), douyin_status: 'not_integrated', provider_status: '/api/providers/status', compare_api: '/api/compare?q=小米充电宝' };
+      const h = {
+        ok: true, name: '价比比 API', runtime: 'server', version: '9.1',
+        pdd_configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID),
+        jd_configured:  !!(JD_APP_KEY && JD_APP_SECRET),
+        tb_enabled: TB_ENABLED, tb_configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID),
+        douyin_enabled: DOUYIN_ENABLED, douyin_configured: DOUYIN_CONFIGURED, douyin_has_token: dyHasToken(),
+        provider_status: '/api/providers/status',
+        douyin_oauth:    '/api/douyin/oauth-start',
+        compare_api:     '/api/compare?q=小米充电宝'
+      };
       if (sandboxMod) Object.assign(h, sandboxMod.sandboxHealthInfo());
       return sendJson(res, 200, h);
     }
-    if (url.pathname === '/api/providers/status') return sendJson(res, 200, { ok: true, runtime: 'server', version: '9.0', providers: providerStatus() });
+
+    if (url.pathname === '/api/providers/status')
+      return sendJson(res, 200, { ok: true, runtime: 'server', version: '9.1', providers: providerStatus() });
+
+    // ---- Douyin OAuth endpoints ----
+    if (url.pathname === '/api/douyin/oauth-start') {
+      if (!DOUYIN_CONFIGURED)
+        return sendJson(res, 400, { ok: false, error: 'missing_douyin_credentials',
+          hint: 'Set DOUYIN_CLIENT_KEY, DOUYIN_CLIENT_SECRET, DOUYIN_REDIRECT_URI in Render env vars' });
+      const scope = 'user_info,buyin.product.search,buyin.product.url';
+      const authUrl = `${DOUYIN_OPEN_API}/platform/oauth/connect/?client_key=${DY_CLIENT_KEY}` +
+        `&response_type=code&scope=${encodeURIComponent(scope)}` +
+        `&redirect_uri=${encodeURIComponent(DY_REDIRECT_URI || '')}` +
+        `&state=jiabibi`;
+      // If it's a browser GET, redirect directly; otherwise return JSON
+      const acceptsHtml = (req.headers.accept || '').includes('text/html');
+      if (acceptsHtml) return sendRedirect(res, authUrl);
+      return sendJson(res, 200, { ok: true, message: '在浏览器打开授权链接', auth_url: authUrl,
+        next: '授权后抓取回调 URL 中的 code 参数，访问 /api/douyin/oauth-callback?code=xxx' });
+    }
+
+    if (url.pathname === '/api/douyin/oauth-callback') {
+      const code = url.searchParams.get('code') || '';
+      if (!code) return sendJson(res, 400, { ok: false, error: 'missing_code' });
+      if (!DOUYIN_CONFIGURED)
+        return sendJson(res, 400, { ok: false, error: 'missing_douyin_credentials' });
+      const raw = await dyExchangeCode(code);
+      const ok = !!(raw && raw.data && raw.data.access_token);
+      return sendJson(res, ok ? 200 : 400, {
+        ok, platform: 'douyin',
+        message: ok ? 'OAuth 成功！token 已写入内存。请将 Render 日志中的 DOUYIN_ACCESS_TOKEN / DOUYIN_REFRESH_TOKEN 复制到环境变量，防止重启后丢失。' : 'OAuth 失败',
+        open_id: ok ? raw.data.open_id : '',
+        expires_in: ok ? raw.data.expires_in : 0,
+        raw: ok ? undefined : raw
+      });
+    }
+
+    if (url.pathname === '/api/douyin/status')
+      return sendJson(res, 200, { ok: true, ...douyinStatusInfo() });
 
     if (url.pathname === '/api/diag') {
       const q = (url.searchParams.get('q') || url.searchParams.get('keyword') || '').trim();
@@ -289,61 +556,78 @@ async function handle(req, res) {
         pddRequest('pdd.ddk.goods.search', { keyword: q, pid: PDD_PID, page: 1, page_size: 10 })
       ]);
       return sendJson(res, 200, {
-        ok: true, q, runtime: 'server', version: '9.0',
-        jd: jdR.status === 'fulfilled' ? jdR.value : { fetch_error: String(jdR.reason) },
-        douyin: { status: 'not_integrated' },
-        pdd: pddR.status === 'fulfilled' ? { total_count: (pddR.value.goods_search_response || {}).total_count, goods_count: ((pddR.value.goods_search_response || {}).goods_list || []).length, ok: true } : { fetch_error: String(pddR.reason) }
+        ok: true, q, runtime: 'server', version: '9.1',
+        jd:  jdR.status  === 'fulfilled' ? jdR.value  : { fetch_error: String(jdR.reason) },
+        pdd: pddR.status === 'fulfilled' ? { total_count: (pddR.value.goods_search_response || {}).total_count, goods_count: ((pddR.value.goods_search_response || {}).goods_list || []).length, ok: true } : { fetch_error: String(pddR.reason) },
+        douyin: douyinStatusInfo()
       });
     }
 
     const { body, q, platform } = await parseInput(req, url);
+
     if (url.pathname === '/api/compare') {
       if (!q) return sendJson(res, 400, { ok: false, error: 'missing_keyword' });
       const providerErrors = {};
       const runProvider = async (name, fn) => {
         try { return await fn(q); }
-        catch (e) {
-          providerErrors[name] = e.message || String(e);
-          return { ok: false, platform: name, keyword: q, total_count: 0, goods_list: [], error: providerErrors[name] };
-        }
+        catch (e) { providerErrors[name] = e.message || String(e);
+          return { ok: false, platform: name, keyword: q, total_count: 0, goods_list: [], error: providerErrors[name] }; }
       };
-      const [pdd, jd, tb] = await Promise.all([
-        runProvider('pdd', searchPdd),
-        runProvider('jd', searchJd),
-        runProvider('tb', searchTb)
-      ]);
-      const providers = { pdd, jd, tb, douyin: { ...DOUYIN_NOT_INTEGRATED, goods_list: [], total_count: 0 } };
-      const counts = { pdd: pdd.goods_list?.length || 0, jd: jd.goods_list?.length || 0, tb: tb.goods_list?.length || 0, douyin: 0 };
-      return sendJson(res, 200, {
-        ok: true, runtime: 'server', version: '9.0', q, counts, provider_errors: providerErrors, providers,
-        goods_list: [...(pdd.goods_list || []), ...(jd.goods_list || []), ...(tb.goods_list || [])]
-      });
+      const tasks = [runProvider('pdd', searchPdd), runProvider('jd', searchJd), runProvider('tb', searchTb)];
+      if (DOUYIN_ENABLED && DOUYIN_CONFIGURED && dyHasToken()) tasks.push(runProvider('douyin', searchDouyin));
+      const [pdd, jd, tb, douyin] = await Promise.all(tasks);
+      const providers = { pdd, jd, tb, douyin: douyin || { ok: false, platform: 'douyin', status: douyinStatusInfo(), goods_list: [], total_count: 0 } };
+      const counts = { pdd: pdd.goods_list?.length || 0, jd: jd.goods_list?.length || 0, tb: tb.goods_list?.length || 0, douyin: douyin?.goods_list?.length || 0 };
+      const allGoods = [...(pdd.goods_list || []), ...(jd.goods_list || []), ...(tb.goods_list || []), ...(douyin?.goods_list || [])];
+      return sendJson(res, 200, { ok: true, runtime: 'server', version: '9.1', q, counts, provider_errors: providerErrors, providers, goods_list: allGoods });
     }
-    if (url.pathname === '/api/douyin/search') return sendJson(res, 200, { ...DOUYIN_NOT_INTEGRATED, goods_list: [], total_count: 0 });
-    if (url.pathname === '/api/douyin/link') return sendJson(res, 200, DOUYIN_NOT_INTEGRATED);
-    if (url.pathname === '/api/tb/search' || url.pathname === '/api/tb/real-search') { if (!q) return sendJson(res, 400, { ok: false, platform: 'tb', error: 'missing_keyword' }); return sendJson(res, 200, await searchTb(q)); }
-    if (url.pathname === '/api/tb/item' || url.pathname === '/api/tb/link') { const input = body.item_id || body.num_iid || body.id || body.url || body.material_url || url.searchParams.get('item_id') || url.searchParams.get('num_iid') || url.searchParams.get('id') || url.searchParams.get('url') || ''; return sendJson(res, 200, await tbItem(input)); }
-    if (url.pathname === '/api/pdd/link') return sendJson(res, 200, await pddLink({ ...body, goods_sign: body.goods_sign || url.searchParams.get('goods_sign'), goods_id: body.goods_id || url.searchParams.get('goods_id') }));
-    if (url.pathname === '/api/jd/link') return sendJson(res, 200, await jdLink({ ...body, sku_id: body.sku_id || url.searchParams.get('sku_id'), material_url: body.material_url || url.searchParams.get('material_url') }));
+
+    if (url.pathname === '/api/douyin/search') {
+      if (!q) return sendJson(res, 400, { ok: false, platform: 'douyin', error: 'missing_keyword' });
+      return sendJson(res, 200, await searchDouyin(q, Number(url.searchParams.get('page') || body.page || 1), Number(url.searchParams.get('page_size') || body.page_size || 20)));
+    }
+    if (url.pathname === '/api/douyin/link')
+      return sendJson(res, 200, await douyinLink({ ...body,
+        product_id: body.product_id || url.searchParams.get('product_id'),
+        product_url: body.product_url || url.searchParams.get('product_url') }));
+
+    if (url.pathname === '/api/tb/search' || url.pathname === '/api/tb/real-search') {
+      if (!q) return sendJson(res, 400, { ok: false, platform: 'tb', error: 'missing_keyword' });
+      return sendJson(res, 200, await searchTb(q));
+    }
+    if (url.pathname === '/api/tb/item' || url.pathname === '/api/tb/link') {
+      const input = body.item_id || body.num_iid || body.id || body.url || body.material_url ||
+        url.searchParams.get('item_id') || url.searchParams.get('num_iid') || url.searchParams.get('id') || url.searchParams.get('url') || '';
+      return sendJson(res, 200, await tbItem(input));
+    }
+    if (url.pathname === '/api/pdd/link')
+      return sendJson(res, 200, await pddLink({ ...body, goods_sign: body.goods_sign || url.searchParams.get('goods_sign'), goods_id: body.goods_id || url.searchParams.get('goods_id') }));
+    if (url.pathname === '/api/jd/link')
+      return sendJson(res, 200, await jdLink({ ...body, sku_id: body.sku_id || url.searchParams.get('sku_id'), material_url: body.material_url || url.searchParams.get('material_url') }));
+
     if (url.pathname === '/api/search' || url.pathname === '/api/search.json' || url.pathname === '/api/provider/search') {
       if (!q) return sendJson(res, 400, { ok: false, error: 'missing_keyword' });
       let result;
-      if (platform === 'tb') result = await searchTb(q);
-      else if (platform === 'pdd') result = await searchPdd(q);
-      else if (platform === 'jd') result = await searchJd(q);
-      else if (platform === 'douyin' || platform === 'dy') result = { ...DOUYIN_NOT_INTEGRATED, goods_list: [], total_count: 0 };
+      if (platform === 'tb')                         result = await searchTb(q);
+      else if (platform === 'pdd')                   result = await searchPdd(q);
+      else if (platform === 'jd')                    result = await searchJd(q);
+      else if (platform === 'douyin' || platform === 'dy') result = await searchDouyin(q);
       else {
-        const settled = await Promise.allSettled([searchPdd(q), searchJd(q), searchTb(q)]);
-        const providers = settled.map(x => x.status === 'fulfilled' ? x.value : { ok: false, error: x.reason && x.reason.message || String(x.reason) });
+        const tasks = [searchPdd(q), searchJd(q), searchTb(q)];
+        if (DOUYIN_ENABLED && DOUYIN_CONFIGURED && dyHasToken()) tasks.push(searchDouyin(q));
+        const settled = await Promise.allSettled(tasks);
+        const providers = settled.map(x => x.status === 'fulfilled' ? x.value : { ok: false, error: x.reason?.message || String(x.reason) });
         const goods = providers.flatMap(x => x.goods_list || []);
         result = { ok: true, q, keyword: q, providers, total_count: goods.length, best: cheapest(goods), goods_list: sortByPrice(goods) };
       }
       return sendJson(res, 200, result);
     }
+
     return sendJson(res, 404, { error: 'not_found', path: url.pathname });
   } catch (e) {
-    return sendJson(res, 500, { ok: false, error: 'server_error', message: e.message || String(e), stack: process.env.NODE_ENV === 'production' ? undefined : e.stack });
+    return sendJson(res, 500, { ok: false, error: 'server_error', message: e.message || String(e),
+      stack: process.env.NODE_ENV === 'production' ? undefined : e.stack });
   }
 }
 
-http.createServer(handle).listen(PORT, () => console.log('Jiabibi server v9.0 listening on', PORT));
+http.createServer(handle).listen(PORT, () => console.log('Jiabibi server v9.1 listening on', PORT));
