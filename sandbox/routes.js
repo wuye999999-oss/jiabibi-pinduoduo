@@ -68,6 +68,9 @@ async function handleSandbox(req, res, url) {
       return sendJson(res, 500, { ok: false, error: 'session_create_failed', message: e.message });
     }
 
+    // 25s per platform — caps any single runaway adapter so the 3-platform
+    // total fits within Render's ~90s effective connection window.
+    const PLATFORM_TIMEOUT_MS = 25000;
     try {
       for (const platform of platforms) {
         platformStatus[platform] = { status: 'opening' };
@@ -76,11 +79,14 @@ async function handleSandbox(req, res, url) {
           if (!adapter) { platformStatus[platform] = { status: 'failed', reason: 'no_adapter' }; continue; }
           const page = await browserRunner.getOrCreatePage(session, platform);
           platformStatus[platform] = { status: 'searching' };
-          const result = await adapter.search(page, keyword);
+          const timeout = new Promise((_, rej) =>
+            setTimeout(() => rej(Object.assign(new Error('platform_timeout'), { code: 'TIMEOUT' })), PLATFORM_TIMEOUT_MS)
+          );
+          const result = await Promise.race([adapter.search(page, keyword), timeout]);
           platformStatus[platform] = { status: result.status, itemCount: (result.items || []).length, failed_reason: result.failed_reason };
           if (result.status === 'success' && result.items) results[platform] = result.items;
         } catch (e) {
-          platformStatus[platform] = { status: 'failed', reason: e.message };
+          platformStatus[platform] = { status: 'failed', reason: e.code || e.message };
         } finally {
           // Always release browser immediately — free ~200 MB per platform
           await browserRunner.closePlatformBrowser(session, platform).catch(() => {});
