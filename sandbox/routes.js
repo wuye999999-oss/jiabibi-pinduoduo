@@ -110,6 +110,16 @@ async function handleSandbox(req, res, url) {
     if (!platform || !ALLOWED_PLATFORMS.includes(platform)) return sendJson(res, 400, { ok: false, error: 'invalid_platform' });
     const v = sanitizer.validateAction(body);
     if (!v.ok) return sendJson(res, 400, { ok: false, error: 'invalid_action', reason: v.reason });
+    // 铁律2: block typing on login/passport pages — server must never receive credentials
+    if (body.type === 'type') {
+      const ctx = session.browsers[platform];
+      if (ctx && ctx.page) {
+        const curUrl = ctx.page.url();
+        if (/login|passport|account|signin/i.test(curUrl)) {
+          return sendJson(res, 403, { ok: false, error: 'type_blocked_on_login_page', message: '铁律2：服务端沙盒不支持在登录页输入内容，请使用 App 授权验价' });
+        }
+      }
+    }
     try {
       await browserRunner.getOrCreatePage(session, platform);
       await browserRunner.performAction(session, platform, body);
@@ -130,18 +140,34 @@ async function handleSandbox(req, res, url) {
     const platforms = (Array.isArray(body.platforms) ? body.platforms : session.platforms).map(normPlatform).filter(p => ALLOWED_PLATFORMS.includes(p));
     session.status = 'searching';
 
-    await Promise.allSettled(platforms.map(async platform => {
+    // Sequential launch — Render free tier has 512 MB; parallel Chromium contexts OOM-crash the server
+    for (const platform of platforms) {
       session.platformStatus[platform] = { status: 'opening' };
       try {
         const adapter = getAdapter(platform);
-        if (!adapter) { session.platformStatus[platform] = { status: 'failed', reason: 'no_adapter' }; return; }
+        if (!adapter) { session.platformStatus[platform] = { status: 'failed', reason: 'no_adapter' }; continue; }
+
+        // Douyin shopping requires login/app even for search — skip browser launch entirely on server
+        if (platform === 'douyin') {
+          session.platformStatus[platform] = { status: 'need_user_action', failed_reason: 'douyin_requires_app_not_supported_server_side' };
+          continue;
+        }
+
         const page = await browserRunner.getOrCreatePage(session, platform);
         session.platformStatus[platform] = { status: 'searching' };
         const result = await adapter.search(page, keyword);
         session.platformStatus[platform] = { status: result.status, itemCount: (result.items || []).length, failed_reason: result.failed_reason };
         if (result.status === 'success' && result.items) session.results[platform] = result.items;
-      } catch (e) { session.platformStatus[platform] = { status: 'failed', reason: e.message }; }
-    }));
+
+        // Free RAM immediately when a platform needs login — server must never hold login state (铁律2)
+        if (['need_user_login', 'need_user_action'].includes(result.status)) {
+          await browserRunner.closePlatformBrowser(session, platform).catch(() => {});
+        }
+      } catch (e) {
+        session.platformStatus[platform] = { status: 'failed', reason: e.message };
+        await browserRunner.closePlatformBrowser(session, platform).catch(() => {});
+      }
+    }
 
     session.status = 'done';
     const allItems = Object.values(session.results).flat();

@@ -6,6 +6,7 @@
   "scripts": {
     "prestart": "npx playwright install --with-deps chromium || true",
     "start": "node server.js",
+    "build": "npx playwright install --with-deps chromium",
     "test": "node --test tests/sandbox.test.js",
     "playwright:install": "npx playwright install --with-deps chromium"
   },

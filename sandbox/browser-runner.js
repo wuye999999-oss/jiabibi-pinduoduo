@@ -58,6 +58,13 @@ async function performAction(session, platform, action) {
   await page.waitForTimeout(400);
 }
 
+async function closePlatformBrowser(session, platform) {
+  const ctx = session.browsers[platform];
+  if (!ctx) return;
+  try { if (ctx.context) await ctx.context.close(); } catch (_) {}
+  delete session.browsers[platform];
+}
+
 async function closeAllBrowsers(session) {
   for (const [, ctx] of Object.entries(session.browsers || {})) {
     try { if (ctx.context) await ctx.context.close(); } catch (_) {}
@@ -65,4 +72,4 @@ async function closeAllBrowsers(session) {
   session.browsers = {};
 }
 
-module.exports = { launchBrowserForSession, getOrCreatePage, takeScreenshot, performAction, closeAllBrowsers };
+module.exports = { launchBrowserForSession, getOrCreatePage, takeScreenshot, performAction, closePlatformBrowser, closeAllBrowsers };
