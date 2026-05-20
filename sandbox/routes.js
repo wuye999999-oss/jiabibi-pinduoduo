@@ -46,6 +46,57 @@ async function handleSandbox(req, res, url) {
   const pathname = url.pathname;
   const method = req.method;
 
+  // POST /api/sandbox/quick-search — stateless one-shot: create + search + close, no session lifecycle needed
+  if (pathname === '/api/sandbox/quick-search' && method === 'POST') {
+    const raw = await readBody(req);
+    let body = {}; try { body = raw ? JSON.parse(raw) : {}; } catch { body = {}; }
+    const keyword = String(body.keyword || '').trim();
+    if (!keyword) return sendJson(res, 400, { ok: false, error: 'missing_keyword' });
+    // Exclude douyin — always needs login, wastes ~350 MB
+    const platforms = (Array.isArray(body.platforms) ? body.platforms : ALLOWED_PLATFORMS)
+      .map(normPlatform).filter(p => ALLOWED_PLATFORMS.includes(p) && p !== 'douyin');
+    if (!platforms.length) return sendJson(res, 400, { ok: false, error: 'no_valid_platforms' });
+
+    let session = null;
+    const platformStatus = {};
+    const results = {};
+    try {
+      session = sessionManager.createSession({ platforms, keyword });
+    } catch (e) {
+      if (e.code === 'MAX_CONCURRENT') return sendJson(res, 429, { ok: false, error: 'busy', message: '服务器正忙，请稍后再试' });
+      return sendJson(res, 500, { ok: false, error: 'session_create_failed', message: e.message });
+    }
+
+    try {
+      for (const platform of platforms) {
+        platformStatus[platform] = { status: 'opening' };
+        try {
+          const adapter = getAdapter(platform);
+          if (!adapter) { platformStatus[platform] = { status: 'failed', reason: 'no_adapter' }; continue; }
+          const page = await browserRunner.getOrCreatePage(session, platform);
+          platformStatus[platform] = { status: 'searching' };
+          const result = await adapter.search(page, keyword);
+          platformStatus[platform] = { status: result.status, itemCount: (result.items || []).length, failed_reason: result.failed_reason };
+          if (result.status === 'success' && result.items) results[platform] = result.items;
+        } catch (e) {
+          platformStatus[platform] = { status: 'failed', reason: e.message };
+        } finally {
+          // Always release browser immediately — free ~200 MB per platform
+          await browserRunner.closePlatformBrowser(session, platform).catch(() => {});
+        }
+      }
+    } finally {
+      await sessionManager.closeSession(session, 'quick_search_done').catch(() => {});
+    }
+
+    const allItems = Object.values(results).flat();
+    return sendJson(res, 200, {
+      ok: true, keyword, total: allItems.length,
+      platforms: platformStatus,
+      results: allItems.map(sanitizer.safePublicResult),
+    });
+  }
+
   // POST /api/sandbox/session — create session
   if (pathname === '/api/sandbox/session' && method === 'POST') {
     const raw = await readBody(req);
