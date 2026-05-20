@@ -2,6 +2,7 @@
 const sessionManager = require('./session-manager');
 const browserRunner = require('./browser-runner');
 const sanitizer = require('./sanitizer');
+const compareBridge = require('./compare-bridge');
 
 const ENABLED = String(process.env.SANDBOX_ENABLED || '').toLowerCase() === 'true';
 const ALLOWED_PLATFORMS = (process.env.SANDBOX_ALLOWED_PLATFORMS || 'jd,pdd,taobao,douyin').split(',').map(x => x.trim());
@@ -90,10 +91,20 @@ async function handleSandbox(req, res, url) {
     }
 
     const allItems = Object.values(results).flat();
+    const safeItems = allItems.map(sanitizer.safePublicResult);
+    // Run compare-bridge so the client can directly see the ranked winners
+    // without having to run buildPriceModel client-side on raw items.
+    const bucket = compareBridge.mergeAndBucket([], allItems);
+    const safe = x => (x ? sanitizer.safePublicResult(x) : null);
     return sendJson(res, 200, {
       ok: true, keyword, total: allItems.length,
       platforms: platformStatus,
-      results: allItems.map(sanitizer.safePublicResult),
+      results: safeItems,
+      best: {
+        official_best: safe(bucket.official_best),
+        channel_best: safe(bucket.channel_best),
+        normal_best: safe(bucket.normal_best),
+      },
     });
   }
 

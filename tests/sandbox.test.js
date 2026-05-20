@@ -299,6 +299,41 @@ describe('compare-bridge', () => {
     assert.strictEqual(result.api_count, 0);
     assert.ok(result.official_best);
   });
+
+  test('normalizeApiItem auto-populates unitPrice from goods_name', () => {
+    const norm = cb.normalizeApiItem({ platform: 'jd', goods_name: '百岁山 570ml 24瓶', coupon_price_yuan: 68 });
+    assert.strictEqual(norm.unitKind, 'L');
+    assert.ok(norm.unitPrice > 0, 'unitPrice should be positive');
+  });
+
+  test('rankByValueOrPrice sorts by unit price when all share same kind', () => {
+    const items = [
+      { price: 30, unitPrice: 5.0, unitKind: 'L' },
+      { price: 20, unitPrice: 3.5, unitKind: 'L' },
+      { price: 25, unitPrice: 4.0, unitKind: 'L' },
+    ];
+    const sorted = cb.rankByValueOrPrice(items);
+    assert.strictEqual(sorted[0].unitPrice, 3.5, 'cheapest per L first');
+  });
+
+  test('rankByValueOrPrice falls back to price when unit kinds differ', () => {
+    const items = [
+      { price: 30, unitPrice: 5.0, unitKind: 'L' },
+      { price: 20, unitPrice: 3.5, unitKind: 'kg' },
+      { price: 25, unitPrice: 4.0, unitKind: 'L' },
+    ];
+    const sorted = cb.rankByValueOrPrice(items);
+    assert.strictEqual(sorted[0].price, 20, 'cheapest sticker price first');
+  });
+
+  test('rankByValueOrPrice falls back to price when some items lack unit', () => {
+    const items = [
+      { price: 30, unitPrice: 5.0, unitKind: 'L' },
+      { price: 20, unitPrice: null, unitKind: '' },
+    ];
+    const sorted = cb.rankByValueOrPrice(items);
+    assert.strictEqual(sorted[0].price, 20);
+  });
 });
 
 // ---------- adapter fixture tests (mock page) ----------
