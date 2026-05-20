@@ -96,7 +96,7 @@ function normalizePdd(item, source = 'pdd.ddk.goods.search') {
   const final = Math.max(0, price - coupon);
   return { platform: 'pdd', source, goods_name: item.goods_name || '', goods_desc: item.goods_desc || item.goods_name || '', brand_name: item.brand_name || '', shop_name: item.mall_name || '', goods_image_url: item.goods_image_url || '', goods_thumbnail_url: item.goods_thumbnail_url || item.goods_image_url || '', goods_id: String(item.goods_id || ''), goods_sign: item.goods_sign || '', sales_tip: item.sales_tip || '', min_group_price_yuan: yuanFromFen(price), coupon_discount_yuan: yuanFromFen(coupon), coupon_price_yuan: yuanFromFen(final || price), has_coupon: coupon > 0, unified_tags: ['拼多多'], material_url: item.goods_url || '', url: item.goods_url || '', raw: item };
 }
-// 检测是否是拼多多/杨可多商品 URL，返回 { goodsId, goodsSign } 或 null
+// 检测是否是拼多多/杨可多商品 URL，返回 { goodsId, goodsSign, ps } 或 null
 function parsePddUrl(q) {
   const PDD_HOSTS = ['yangkeduo.com', 'pinduoduo.com', 'mobile.pdd.com'];
   try {
@@ -106,13 +106,14 @@ function parsePddUrl(q) {
     if (!PDD_HOSTS.some(h => u.hostname === h || u.hostname.endsWith('.' + h))) return null;
     const goodsId = u.searchParams.get('goods_id') || u.searchParams.get('goodsId') || '';
     const goodsSign = u.searchParams.get('goods_sign') || u.searchParams.get('goodsSign') || '';
-    return { goodsId, goodsSign };
+    const ps = u.searchParams.get('ps') || '';
+    return { goodsId, goodsSign, ps };
   } catch {
     return null;
   }
 }
 
-// 按 goods_id 或 goods_sign 直查商品详情（用于 URL 输入，不做关键词搜索，铁律1）
+// 按 goods_id 或 goods_sign 直查商品详情（铁律1：真实接口，不造假）
 async function pddGoodsDetail(goodsId, goodsSign) {
   const biz = { pid: PDD_PID, custom_parameters: PDD_CUSTOM_PARAMETERS };
   if (goodsSign) biz.goods_sign_list = JSON.stringify([goodsSign]);
@@ -125,9 +126,49 @@ async function pddGoodsDetail(goodsId, goodsSign) {
     total_count: list.length, goods_list: list.map(x => normalizePdd(x, 'pdd.ddk.goods.detail')), raw };
 }
 
+// ps-only 分享链接：跟随 HTTP 302 重定向，从落地 URL 提取 goods_id（5 秒超时，不保存任何 cookie）
+function followPddRedirect(psUrl) {
+  return new Promise(resolve => {
+    const ua = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
+    function doReq(url, hops) {
+      if (hops > 5) return resolve('');
+      try {
+        const u = new URL(url);
+        const cli = u.protocol === 'http:' ? http : https;
+        const req = cli.request({ method: 'GET', hostname: u.hostname, path: u.pathname + u.search, port: u.port || (u.protocol === 'http:' ? 80 : 443), timeout: 5000, headers: { 'User-Agent': ua, 'Accept': 'text/html' } }, res => {
+          res.resume();
+          const loc = res.headers.location || '';
+          if ((res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307 || res.statusCode === 308) && loc) {
+            try {
+              const next = new URL(loc.startsWith('/') ? `${u.protocol}//${u.hostname}${loc}` : loc);
+              const gid = next.searchParams.get('goods_id') || next.searchParams.get('goodsId') || '';
+              if (gid) return resolve(gid);
+              doReq(next.href, hops + 1);
+            } catch { resolve(''); }
+          } else { resolve(''); }
+        });
+        req.on('timeout', () => { req.destroy(); resolve(''); });
+        req.on('error', () => resolve(''));
+        req.end();
+      } catch { resolve(''); }
+    }
+    doReq(psUrl, 0);
+  });
+}
+
 async function searchPdd(q, pageSize = 20) {
   const pddUrl = parsePddUrl(q);
-  if (pddUrl) return pddGoodsDetail(pddUrl.goodsId, pddUrl.goodsSign);
+  if (pddUrl) {
+    if (pddUrl.goodsId || pddUrl.goodsSign) return pddGoodsDetail(pddUrl.goodsId, pddUrl.goodsSign);
+    if (pddUrl.ps) {
+      console.log('[PDD] ps-only link, following redirect to resolve goods_id');
+      const goodsId = await followPddRedirect(q);
+      if (goodsId) return pddGoodsDetail(goodsId, '');
+      return { ok: false, platform: 'pdd', error: 'ps_link_unresolvable', mode: 'url_lookup',
+        hint: '该分享链接无法从服务器侧解析商品 ID，请在手机浏览器打开后复制含 goods_id 的完整链接',
+        goods_list: [], total_count: 0 };
+    }
+  }
   const size = Math.min(Math.max(1, Number(pageSize) || 20), 100);
   const raw = await pddRequest('pdd.ddk.goods.search', { keyword: q, pid: PDD_PID, page: 1, page_size: size, custom_parameters: PDD_CUSTOM_PARAMETERS });
   if (raw.error || raw.error_response) return { ok: false, platform: 'pdd', keyword: q, total_count: 0, goods_list: [], raw };
