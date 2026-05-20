@@ -98,19 +98,17 @@ async function handleSandbox(req, res, url) {
 
     const allItems = Object.values(results).flat();
     const safeItems = allItems.map(sanitizer.safePublicResult);
-    // Run compare-bridge so the client can directly see the ranked winners
-    // without having to run buildPriceModel client-side on raw items.
-    const bucket = compareBridge.mergeAndBucket([], allItems);
-    const safe = x => (x ? sanitizer.safePublicResult(x) : null);
+    let best = { official_best: null, channel_best: null, normal_best: null };
+    try {
+      const bucket = compareBridge.mergeAndBucket([], allItems);
+      const safe = x => (x ? sanitizer.safePublicResult(x) : null);
+      best = { official_best: safe(bucket.official_best), channel_best: safe(bucket.channel_best), normal_best: safe(bucket.normal_best) };
+    } catch (_) {}
     return sendJson(res, 200, {
       ok: true, keyword, total: allItems.length,
       platforms: platformStatus,
       results: safeItems,
-      best: {
-        official_best: safe(bucket.official_best),
-        channel_best: safe(bucket.channel_best),
-        normal_best: safe(bucket.normal_best),
-      },
+      best,
     });
   }
 
