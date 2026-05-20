@@ -80,7 +80,7 @@ const groups=['official','channel','normal'];
 const $=id=>document.getElementById(id);
 const yuan=n=>Number(n||0).toFixed(2).replace(/\.00$/,'');
 const priceOf=item=>Number(item?.coupon_price_yuan||item?.min_group_price_yuan||999999);
-let effectiveKeyword='真零 酸奶', providerState=[];
+let effectiveKeyword='真零 酸奶', providerState=[], providerConfig={};
 function toast(msg){const t=$('toast');t.textContent=msg;t.style.display='block';setTimeout(()=>t.style.display='none',1800)}
 function norm(s){return String(s||'').toLowerCase().replace(/[\s\-_【】\[\]（）()，,。.!！:：/\\]+/g,'')}
 function itemTitle(item){return String(item.goods_name||'')}
@@ -116,7 +116,7 @@ function channelType(item){const text=itemText(item);if(hitsAny(text,officialWor
 function best(list,q,type,platform){return list.filter(x=>x.platform===platform&&channelType(x)===type&&strictRelevant(x,q)).sort((a,b)=>compareValue(a,q)-compareValue(b,q)||score(b,q)-score(a,q)||priceOf(a)-priceOf(b))[0]||null}
 function bestAcross(list,q,type){return platforms.map(([p])=>best(list,q,type,p)).filter(Boolean).sort((a,b)=>compareValue(a,q)-compareValue(b,q)||score(b,q)-score(a,q)||priceOf(a)-priceOf(b))[0]||null}
 function showLoading(){const s=$('summary');s.innerHTML='';for(let i=0;i<3;i++){const d=document.createElement('div');d.className='loading';s.appendChild(d)}}
-function platformEmptyLabel(platform){const st=providerState.find(x=>x.platform===platform);if(st&&st.source==='provider_placeholder')return '待接入';return '未返回/未识别'}
+function platformEmptyLabel(platform){const cfg=providerConfig[platform];if(cfg&&cfg.configured===false)return '待接入';return '未返回/未识别'}
 function platformMini(list,q,type){return `<div class="platforms">${platforms.map(([p,n])=>{const item=best(list,q,type,p);const spec=item?specText(item,q):'';return `<div class="p"><div class="p-name">${n}</div>${item?`<div class="p-price">¥${yuan(priceOf(item))}</div><div class="p-unit">${spec.split('｜').slice(-1)[0]||''}</div>`:`<div class="p-empty">${platformEmptyLabel(p)}</div>`}</div>`}).join('')}</div>`}
 function card(type,item,list,q){const meta=groupMeta[type], platform=item?platforms.find(x=>x[0]===item.platform)?.[1]:'';const spec=item?specText(item,q):'';return `<section class="deal-card"><div class="deal-head"><div><div class="deal-type">${meta.desc}</div><div class="deal-title">${meta.title}</div></div><div class="badge ${type}">${platform||'暂无'}</div></div><div class="best"><div>${item?`<div class="price"><small>¥</small>${yuan(priceOf(item))}</div><div class="source">${platform} · ${item.shop_name||item.brand_name||''}<br>${item.goods_name||''}</div>${spec?`<div class="spec">${spec}</div>`:''}`:`<div class="price"><small>¥</small>--</div><div class="source">${meta.hint}</div><div class="hint">这通常是接口覆盖问题，不代表平台上绝对没有该店型。</div>`}</div><button class="buy" ${item?`data-key="${item._key}"`:''} ${item?'':'disabled'}>去购买</button></div>${platformMini(list,q,type)}</section>`}
 function render(list,q,providers){providerState=providers||[];const filtered=list.filter(x=>strictRelevant(x,q||effectiveKeyword));const keyed={};filtered.forEach((x,i)=>{x._key='k'+i;keyed[x._key]=x});window.__goods=keyed;const s=$('summary');s.innerHTML='';if(!filtered.length){s.innerHTML='<div class="empty">暂无可靠匹配。为了避免错品，已过滤掉不满足品牌、品类、强属性或规格的结果。</div>';return}for(const type of groups){const item=bestAcross(filtered,q||effectiveKeyword,type);s.insertAdjacentHTML('beforeend',card(type,item,filtered,q||effectiveKeyword))}document.querySelectorAll('.buy[data-key]').forEach(b=>b.onclick=e=>buy(window.__goods[e.target.dataset.key]))}
@@ -167,9 +167,10 @@ async function buy(item){
     const link=d.mobile_short_url||d.short_url||d.mobile_url||d.click_url||d.url||d.schema_url;
     if(link)location.href=link;else toast('没有返回链接');
   }catch(e){toast('生成失败：'+e.message)}}
+async function loadProviders(){try{const d=await fetch(`${API_BASE}/api/providers/status`,{cache:'no-store'}).then(r=>r.json());(d.providers||[]).forEach(p=>{providerConfig[p.platform]=p;});} catch(_){}}
 $('form').onsubmit=e=>{e.preventDefault();search(null,true)};
 hotWords.forEach(w=>{const b=document.createElement('button');b.className='chip';b.textContent=w;b.onclick=()=>search(w,true);$('chips').appendChild(b)});
-search('真零 酸奶',false);
+loadProviders().then(()=>search('真零 酸奶',false));
 </script>
 <script src="sandbox-ui.js"></script>
 </body>
