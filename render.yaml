@@ -1,12 +1,22 @@
 services:
   - type: web
     name: jiabibi-api
-    env: node
+    runtime: node
     plan: free
     buildCommand: npm install && npx playwright install --with-deps chromium
-    startCommand: npm start
+    startCommand: node server.js
     envVars:
       - key: NODE_ENV
         value: production
       - key: JD_PLAYWRIGHT_ENABLED
         value: "true"
+      - key: SANDBOX_ENABLED
+        value: "true"
+      - key: SANDBOX_MAX_CONCURRENT
+        value: "1"
+      - key: SANDBOX_SESSION_TTL_MS
+        value: "600000"
+      - key: SANDBOX_HEADLESS
+        value: "true"
+      - key: PORT
+        value: "3000"
