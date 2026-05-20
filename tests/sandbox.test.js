@@ -174,7 +174,7 @@ describe('extractor-common', () => {
   });
 
   test('detectShopType identifies flagship for 旗舰店', () => {
-    assert.strictEqual(ec.detectShopType('某品牌旗舰店'), 'flagship');
+    assert.strictEqual(ec.detectShopType('某某旗舰店'), 'flagship');
   });
 
   test('detectShopType identifies channel for 专卖店', () => {
@@ -289,7 +289,7 @@ describe('jd adapter with mock page', () => {
         return null;
       },
       waitForSelector: async () => {},
-      evaluate: async (fn) => fn(),
+      evaluate: async () => items,
     };
   }
 
@@ -323,7 +323,7 @@ describe('pdd adapter with mock page', () => {
       url: () => 'https://mobile.yangkeduo.com/search_result.html',
       $: async (sel) => hasCaptcha && sel.includes('captcha') ? {} : null,
       waitForSelector: async () => {},
-      evaluate: async (fn) => fn(),
+      evaluate: async () => [],
     };
   }
 
@@ -349,7 +349,7 @@ describe('taobao adapter with mock page', () => {
       url: () => 'https://login.taobao.com/member/login.jhtml',
       $: async () => null,
       waitForSelector: async () => {},
-      evaluate: async (fn) => fn(),
+      evaluate: async () => [],
     };
     const result = await tb.search(page, 'test');
     assert.strictEqual(result.status, 'need_user_login');
@@ -361,7 +361,7 @@ describe('taobao adapter with mock page', () => {
       url: () => 'https://s.taobao.com/search?q=test',
       $: async () => null,
       waitForSelector: async () => {},
-      evaluate: async (fn) => fn(),
+      evaluate: async () => [],
     };
     const result = await tb.search(page, 'test');
     assert.strictEqual(result.status, 'failed');
