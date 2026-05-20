@@ -200,6 +200,31 @@ describe('extractor-common', () => {
     const item = ec.makeItem({ provider: 'pdd', title: '  test  ', price: 1 });
     assert.strictEqual(item.title, 'test');
   });
+
+  test('computeUnitPrice computes ¥/L for ml×count title', () => {
+    const r = ec.computeUnitPrice('百岁山 570ml×24瓶', 68);
+    assert.strictEqual(r.unitKind, 'L');
+    assert.ok(r.unitPrice > 0);
+    assert.ok(r.unitText.includes('/L'));
+  });
+
+  test('computeUnitPrice computes ¥/kg for weight title', () => {
+    const r = ec.computeUnitPrice('某品牌 500g', 19.9);
+    assert.strictEqual(r.unitKind, 'kg');
+    assert.ok(r.unitPrice > 0);
+  });
+
+  test('computeUnitPrice returns null for non-spec title', () => {
+    const r = ec.computeUnitPrice('手机壳苹果15', 29);
+    assert.strictEqual(r.unitPrice, null);
+    assert.strictEqual(r.unitKind, '');
+  });
+
+  test('makeItem auto-populates unitPrice from title', () => {
+    const item = ec.makeItem({ provider: 'jd', title: '百岁山 570ml×24瓶', price: 68 });
+    assert.strictEqual(item.unitKind, 'L');
+    assert.ok(item.unitPrice > 0);
+  });
 });
 
 // ---------- compare-bridge ----------
