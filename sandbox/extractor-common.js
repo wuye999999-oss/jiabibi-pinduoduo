@@ -45,7 +45,7 @@ function computeUnitPrice(titleSpec, price) {
     const cap = parseFloat(m[1]);
     if (cap > 0) return { unitPrice: price / (cap / 10000), unitText: cap + 'mAh｜¥' + (price / (cap / 10000)).toFixed(2) + '/万mAh', unitKind: '万mAh' };
   }
-  m = t.match(/([0-9]+)(件|包|袋|瓶|抽|卷|片|个|支|盒|双|条)(?:[*x×]([0-9]+))?/);
+  m = t.match(/([0-9]+)(件|包|袋|瓶|罐|抽|卷|片|张|个|支|盒|双|条)(?:[*x×]([0-9]+))?/);
   if (m) {
     let cnt = parseInt(m[1]);
     if (m[3]) cnt *= parseInt(m[3]);
