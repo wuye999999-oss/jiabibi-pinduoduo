@@ -61,6 +61,10 @@ async function handleSandbox(req, res, url) {
     let session = null;
     const platformStatus = {};
     const results = {};
+    // Detect client disconnection — if the browser aborts the fetch, stop wasting CPU/RAM.
+    let clientGone = false;
+    req.on('close', () => { clientGone = true; });
+
     try {
       session = sessionManager.createSession({ platforms, keyword });
     } catch (e) {
@@ -73,6 +77,7 @@ async function handleSandbox(req, res, url) {
     const PLATFORM_TIMEOUT_MS = 25000;
     try {
       for (const platform of platforms) {
+        if (clientGone) break; // client disconnected — no point continuing
         platformStatus[platform] = { status: 'opening' };
         try {
           const adapter = getAdapter(platform);
