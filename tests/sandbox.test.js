@@ -427,3 +427,43 @@ describe('taobao adapter with mock page', () => {
     assert.strictEqual(result.status, 'failed');
   });
 });
+
+describe('douyin adapter with mock page', () => {
+  const dy = require('../sandbox/adapters/douyin');
+
+  test('douyin search returns need_user_login when redirected to login', async () => {
+    const page = {
+      goto: async () => {},
+      url: () => 'https://www.douyin.com/login?redirect=/',
+      $: async () => null,
+      waitForSelector: async () => {},
+      evaluate: async () => [],
+    };
+    const result = await dy.search(page, 'test');
+    assert.strictEqual(result.status, 'need_user_login');
+  });
+
+  test('douyin search returns need_user_action when captcha detected', async () => {
+    const page = {
+      goto: async () => {},
+      url: () => 'https://haohuo.jinritemai.com/views/product/list',
+      $: async (sel) => sel.includes('captcha') ? {} : null,
+      waitForSelector: async () => {},
+      evaluate: async () => [],
+    };
+    const result = await dy.search(page, 'test');
+    assert.strictEqual(result.status, 'need_user_action');
+  });
+
+  test('douyin search returns failed with no DOM items', async () => {
+    const page = {
+      goto: async () => {},
+      url: () => 'https://haohuo.jinritemai.com/views/product/list',
+      $: async () => null,
+      waitForSelector: async () => {},
+      evaluate: async () => [],
+    };
+    const result = await dy.search(page, 'test');
+    assert.strictEqual(result.status, 'failed');
+  });
+});
