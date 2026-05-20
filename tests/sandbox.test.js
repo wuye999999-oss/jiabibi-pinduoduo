@@ -338,6 +338,19 @@ describe('compare-bridge', () => {
     const sorted = cb.rankByValueOrPrice(items);
     assert.strictEqual(sorted[0].price, 20);
   });
+
+  test('mergeAndBucket puts 旗舰店 item in official bucket (flagship = official tier)', () => {
+    const { makeItem } = require('../sandbox/extractor-common');
+    const flagshipItem = makeItem({
+      provider: 'tb', title: '测试商品 500ml', price: 45,
+      shopName: '某某旗舰店', shopType: 'flagship',
+      itemUrl: '', imageUrl: '', confidence: 0.80,
+    });
+    const result = cb.mergeAndBucket([], [flagshipItem]);
+    assert.ok(result.official_best, 'flagship item should land in official bucket');
+    assert.strictEqual(result.official_best.price, 45);
+    assert.strictEqual(result.channel_best, null, 'channel should be empty');
+  });
 });
 
 // ---------- adapter fixture tests (mock page) ----------
