@@ -153,8 +153,12 @@ async function search(v,userSearch){
 async function buy(item){
   if(!item)return;
   if(item._sandbox){if(item.url||item.material_url)location.href=item.url||item.material_url;else toast('该商品暂无购买链接');return;}
-  try{toast('正在生成购买链接...');let endpoint,body;
-    if(item.platform==='jd'){endpoint='/api/jd/link';body={sku_id:item.sku_id,material_url:item.material_url,coupon_url:item.coupon_url}}
+  const directUrl=item.material_url||item.url||item.item_url||'';
+  try{toast('正在生成购买链接...');
+    if(item.platform==='tb'){location.href=directUrl||'https://s.m.taobao.com/h5?q='+encodeURIComponent(item.goods_name||effectiveKeyword||'');return;}
+    if(item.platform==='douyin'){location.href=directUrl||'https://www.douyin.com/search/'+encodeURIComponent(item.goods_name||effectiveKeyword||'');return;}
+    let endpoint,body;
+    if(item.platform==='jd'){endpoint='/api/jd/link';body={sku_id:item.sku_id,material_url:directUrl,coupon_url:item.coupon_url}}
     else if(item.platform==='pdd'){endpoint='/api/pdd/link';body={goods_sign:item.goods_sign}}
     else{toast('该平台真实转链未接入');return}
     const r=await fetch(`${API_BASE}${endpoint}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
