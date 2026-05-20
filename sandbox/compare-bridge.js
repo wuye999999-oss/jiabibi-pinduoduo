@@ -1,18 +1,12 @@
 'use strict';
-const { computeUnitPrice } = require('./extractor-common');
+const { computeUnitPrice, detectShopType } = require('./extractor-common');
 
 function normalizeApiItem(item) {
   const price = Number(item.coupon_price_yuan || item.min_group_price_yuan || item.final_price || item.price || 0);
   const title = String(item.goods_name || item.goods_desc || '');
-  const text = [title, item.brand_name, item.shop_name, ...(item.unified_tags || [])].join(' ');
-  const n = text.toLowerCase();
-  let shopType = 'normal';
-  if (/京东自营|jd自营/.test(n)) shopType = 'self_operated';
-  else if (/天猫超市/.test(n)) shopType = 'self_operated';
-  else if (/官方旗舰店|品牌旗舰店/.test(n)) shopType = 'official';
-  else if (/旗舰店/.test(n)) shopType = 'flagship';
-  else if (/专卖店|专营店|授权/.test(n)) shopType = 'channel';
-  else if (/天猫/.test(n)) shopType = 'flagship';
+  const shopName = String(item.shop_name || item.brand_name || '');
+  const badges = Array.isArray(item.unified_tags) ? item.unified_tags : [];
+  const shopType = detectShopType([title, shopName, ...badges].join(' '), []);
   const { unitPrice, unitText, unitKind } = computeUnitPrice(title, price);
   return {
     source: 'api',
@@ -22,7 +16,7 @@ function normalizeApiItem(item) {
     unitPrice,
     unitText,
     unitKind,
-    shopName: String(item.shop_name || item.brand_name || ''),
+    shopName,
     shopType,
     itemUrl: String(item.material_url || item.url || item.item_url || ''),
     imageUrl: String(item.goods_image_url || item.goods_thumbnail_url || ''),
@@ -31,9 +25,11 @@ function normalizeApiItem(item) {
   };
 }
 
+// flagship = brand-owned official store → same bucket as self_operated/official.
+// Matches the web frontend's storeType() which maps 旗舰店 → 'official'.
 function bucketOf(shopType) {
-  if (['self_operated','official'].includes(shopType)) return 'official';
-  if (['flagship','channel'].includes(shopType)) return 'channel';
+  if (['self_operated','official','flagship'].includes(shopType)) return 'official';
+  if (['channel'].includes(shopType)) return 'channel';
   return 'normal';
 }
 

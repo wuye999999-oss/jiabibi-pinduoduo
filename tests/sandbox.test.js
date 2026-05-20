@@ -259,8 +259,12 @@ describe('compare-bridge', () => {
     assert.strictEqual(cb.bucketOf('self_operated'), 'official');
   });
 
-  test('bucketOf puts flagship in channel', () => {
-    assert.strictEqual(cb.bucketOf('flagship'), 'channel');
+  test('bucketOf puts flagship in official (brand-run store = official tier)', () => {
+    assert.strictEqual(cb.bucketOf('flagship'), 'official');
+  });
+
+  test('bucketOf puts channel in channel', () => {
+    assert.strictEqual(cb.bucketOf('channel'), 'channel');
   });
 
   test('bucketOf puts normal in normal', () => {
