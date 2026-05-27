@@ -1,12 +1,13 @@
-// server.js v9.3
+// server.js v9.4
 // Entry point: PDD / JD / Taobao active. Douyin: OAuth2 精选联盟 framework.
-// JD: auto-fallback goods.query → jingfen.query on permission error.
+// JD: auto-fallback goods.query → jingfen.query → Playwright on permission error.
 // PDD: URL input (yangkeduo.com / pinduoduo.com) → goods.detail direct lookup.
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
 
 const sandboxMod = (() => { try { return require('./sandbox/routes'); } catch (_) { return null; } })();
+const jdPlaywrightMod = (() => { try { return require('./sandbox/jd-playwright-search'); } catch (_) { return null; } })();
 const PORT = process.env.PORT || 3000;
 
 function envFirst(...names) {
@@ -199,6 +200,7 @@ const JD_SITE_ID = envFirst('JD_SITE_ID', 'JD_SITEID') || (JD_PID ? JD_PID.split
 const JD_SEARCH_METHOD = envFirst('JD_SEARCH_METHOD') || 'jd.union.open.goods.query';
 const JD_PROMOTION_METHOD = envFirst('JD_PROMOTION_METHOD') || 'jd.union.open.promotion.common.get';
 const JD_JINGFEN_METHOD = 'jd.union.open.goods.jingfen.query';
+const JD_PLAYWRIGHT_ENABLED = String(process.env.JD_PLAYWRIGHT_ENABLED || 'true').toLowerCase() !== 'false';
 function jdTimestamp() { const d = new Date(Date.now() + 8 * 3600000); const p = n => String(n).padStart(2, '0'); return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`; }
 function jdSign(params) { let s = JD_APP_SECRET; Object.keys(params).sort().forEach(k => { s += k + params[k]; }); return md5Upper(s + JD_APP_SECRET); }
 async function jdRequest(method, biz = {}) {
@@ -247,6 +249,10 @@ async function searchJd(q, pageSize = 20) {
   const first = parseJdResponse(raw);
 
   if (first.httpError) {
+    if (JD_PLAYWRIGHT_ENABLED && jdPlaywrightMod) {
+      console.log('[JD] Union API HTTP error, trying Playwright fallback');
+      return jdPlaywrightMod.searchJdPlaywright(q, pageSize);
+    }
     return { ok: false, platform: 'jd', keyword: q, total_count: 0, goods_list: [], error: first.httpError, raw };
   }
 
@@ -269,6 +275,10 @@ async function searchJd(q, pageSize = 20) {
   }
 
   if (parsed.code !== undefined && Number(parsed.code) !== 0) {
+    if (JD_PLAYWRIGHT_ENABLED && jdPlaywrightMod) {
+      console.log(`[JD] Union API error (code=${parsed.code}), trying Playwright fallback`);
+      return jdPlaywrightMod.searchJdPlaywright(q, pageSize);
+    }
     return { ok: false, platform: 'jd', keyword: q, total_count: 0, goods_list: [],
       error: 'jd_api_error', jd_code: parsed.code, jd_message: parsed.message || '',
       hint: isJdPermissionError(parsed) ? '可在 union.jd.com 申请接口权限，或手动设置 JD_SEARCH_METHOD=jd.union.open.goods.jingfen.query' : undefined,
@@ -486,7 +496,8 @@ function providerStatus() {
   return [
     { platform: 'pdd', name: '拼多多', configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID), search: true, link: true, source: 'pdd.ddk' },
     { platform: 'jd',  name: '京东',  configured: !!(JD_APP_KEY && JD_APP_SECRET), search: true, link: true, source: 'jd.union',
-      jd_search_method: JD_SEARCH_METHOD, auto_fallback: '权限错误自动降级到 jingfen.query' },
+      jd_search_method: JD_SEARCH_METHOD, auto_fallback: '权限错误自动降级 goods.query → jingfen.query → Playwright',
+      playwright_enabled: JD_PLAYWRIGHT_ENABLED && !!jdPlaywrightMod },
     { platform: 'tb',  name: '淘宝',  configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID), enabled: TB_ENABLED, search: true, link: true, source: 'taobao TOP / alimama' },
     { platform: 'douyin', name: '抖音', ...douyinStatusInfo(), search: DOUYIN_ENABLED && DOUYIN_CONFIGURED && dyHasToken(), link: DOUYIN_ENABLED && DOUYIN_CONFIGURED && dyHasToken(), source: 'open.douyin.com / buyin' }
   ];
@@ -512,12 +523,12 @@ async function handle(req, res) {
       return sandboxMod.handleSandbox(req, res, url);
     }
     if (url.pathname === '/' || url.pathname === '/health') {
-      const h = { ok: true, name: '价比比 API', runtime: 'server', version: '9.3', pdd_configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID), jd_configured: !!(JD_APP_KEY && JD_APP_SECRET), jd_auto_fallback: 'enabled', tb_enabled: TB_ENABLED, tb_configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID), douyin_enabled: DOUYIN_ENABLED, douyin_configured: DOUYIN_CONFIGURED, douyin_has_token: dyHasToken(), provider_status: '/api/providers/status', health_deep: '/api/health/deep', douyin_oauth: '/api/douyin/oauth-start', compare_api: '/api/compare?q=小米充电宝' };
+      const h = { ok: true, name: '价比比 API', runtime: 'server', version: '9.4', pdd_configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID), jd_configured: !!(JD_APP_KEY && JD_APP_SECRET), jd_auto_fallback: 'enabled', tb_enabled: TB_ENABLED, tb_configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID), douyin_enabled: DOUYIN_ENABLED, douyin_configured: DOUYIN_CONFIGURED, douyin_has_token: dyHasToken(), provider_status: '/api/providers/status', health_deep: '/api/health/deep', douyin_oauth: '/api/douyin/oauth-start', compare_api: '/api/compare?q=小米充电宝' };
       if (sandboxMod) Object.assign(h, sandboxMod.sandboxHealthInfo());
       return sendJson(res, 200, h);
     }
     if (url.pathname === '/api/providers/status')
-      return sendJson(res, 200, { ok: true, runtime: 'server', version: '9.3', providers: providerStatus() });
+      return sendJson(res, 200, { ok: true, runtime: 'server', version: '9.4', providers: providerStatus() });
 
     // 实时探针各平台。小心：会真实发起 API 请求
 if (url.pathname === '/api/health/deep') {
@@ -526,7 +537,7 @@ if (url.pathname === '/api/health/deep') {
       const p = r => r.status === 'fulfilled' ? r.value : { ok: false, error: r.reason?.message || String(r.reason) };
       const pddRes = p(pddR), jdRes = p(jdR), tbRes = p(tbR);
       return sendJson(res, 200, {
-        ok: true, q, runtime: 'server', version: '9.3', ts: new Date().toISOString(),
+        ok: true, q, runtime: 'server', version: '9.4', ts: new Date().toISOString(),
         pdd: { ok: pddRes.ok, count: pddRes.goods_list?.length || 0, error: pddRes.error || null },
         jd:  { ok: jdRes.ok,  count: jdRes.goods_list?.length  || 0, source: jdRes.source, jd_code: jdRes.jd_code, jd_message: jdRes.jd_message, error: jdRes.error || null },
         tb:  { ok: tbRes.ok,  count: tbRes.goods_list?.length  || 0, enabled: TB_ENABLED, error: tbRes.error || null },
@@ -559,7 +570,7 @@ if (url.pathname === '/api/health/deep') {
       const jdGoodsReq = { keyword: q, pageIndex: 1, pageSize: 10 };
       if (posId) jdGoodsReq.positionId = posId;
       const [jdR, pddR] = await Promise.allSettled([jdRequest(JD_SEARCH_METHOD, { goodsReq: jdGoodsReq }), pddRequest('pdd.ddk.goods.search', { keyword: q, pid: PDD_PID, page: 1, page_size: 10 })]);
-      return sendJson(res, 200, { ok: true, q, runtime: 'server', version: '9.3', jd: jdR.status === 'fulfilled' ? jdR.value : { fetch_error: String(jdR.reason) }, pdd: pddR.status === 'fulfilled' ? { total_count: (pddR.value.goods_search_response || {}).total_count, goods_count: ((pddR.value.goods_search_response || {}).goods_list || []).length, ok: true } : { fetch_error: String(pddR.reason) }, douyin: douyinStatusInfo() });
+      return sendJson(res, 200, { ok: true, q, runtime: 'server', version: '9.4', jd: jdR.status === 'fulfilled' ? jdR.value : { fetch_error: String(jdR.reason) }, pdd: pddR.status === 'fulfilled' ? { total_count: (pddR.value.goods_search_response || {}).total_count, goods_count: ((pddR.value.goods_search_response || {}).goods_list || []).length, ok: true } : { fetch_error: String(pddR.reason) }, douyin: douyinStatusInfo() });
     }
 
     const { body, q, platform, pageSize } = await parseInput(req, url);
@@ -573,7 +584,7 @@ if (url.pathname === '/api/health/deep') {
       const providers = { pdd, jd, tb, douyin: douyin || { ok: false, platform: 'douyin', status: douyinStatusInfo(), goods_list: [], total_count: 0 } };
       const counts = { pdd: pdd.goods_list?.length || 0, jd: jd.goods_list?.length || 0, tb: tb.goods_list?.length || 0, douyin: douyin?.goods_list?.length || 0 };
       const allGoods = [...(pdd.goods_list || []), ...(jd.goods_list || []), ...(tb.goods_list || []), ...(douyin?.goods_list || [])];
-      return sendJson(res, 200, { ok: true, runtime: 'server', version: '9.3', q, counts, provider_errors: providerErrors, providers, goods_list: allGoods });
+      return sendJson(res, 200, { ok: true, runtime: 'server', version: '9.4', q, counts, provider_errors: providerErrors, providers, goods_list: allGoods });
     }
     if (url.pathname === '/api/douyin/search') { if (!q) return sendJson(res, 400, { ok: false, platform: 'douyin', error: 'missing_keyword' }); return sendJson(res, 200, await searchDouyin(q, Number(url.searchParams.get('page') || body.page || 1), Number(url.searchParams.get('page_size') || body.page_size || 20))); }
     if (url.pathname === '/api/douyin/link') return sendJson(res, 200, await douyinLink({ ...body, product_id: body.product_id || url.searchParams.get('product_id'), product_url: body.product_url || url.searchParams.get('product_url') }));
@@ -605,4 +616,4 @@ if (url.pathname === '/api/health/deep') {
   }
 }
 
-http.createServer(handle).listen(PORT, () => console.log('Jiabibi server v9.2 listening on', PORT));
+http.createServer(handle).listen(PORT, () => console.log('Jiabibi server v9.4 listening on', PORT));
