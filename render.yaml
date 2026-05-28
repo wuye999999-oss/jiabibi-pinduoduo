@@ -20,3 +20,15 @@ services:
         value: "true"
       - key: PORT
         value: "3000"
+      # 京东联盟 — 在 Render dashboard 填值，不要写进代码 (sync: false)
+      # 不设置 JD_SEARCH_METHOD：默认走 goods.query，权限报错时代码自动降级到 jingfen.query
+      - key: JD_APP_KEY
+        sync: false
+      - key: JD_APP_SECRET
+        sync: false
+      - key: JD_ACCESS_TOKEN
+        sync: false
+      - key: JD_POSITION_ID
+        sync: false
+      - key: JD_SITE_ID
+        sync: false
