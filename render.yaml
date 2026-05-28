@@ -3,7 +3,9 @@ services:
     name: jiabibi-api
     runtime: node
     plan: free
-    buildCommand: npm install && npx playwright install --with-deps chromium
+    # Chromium 是可选的（沙盒/JD 网页降级用）。装不上也不能让整个部署失败——
+    # JD/PDD/淘宝 的真实 API 不需要浏览器，server.js 已对 Chromium 缺失做了降级处理。
+    buildCommand: npm install && (npx playwright install --with-deps chromium || npx playwright install chromium || true)
     startCommand: node server.js
     envVars:
       - key: NODE_ENV
