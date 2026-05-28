@@ -174,7 +174,7 @@ describe('extractor-common', () => {
   });
 
   test('detectShopType identifies flagship for 旗舰店', () => {
-    assert.strictEqual(ec.detectShopType('某品牌旗舰店'), 'flagship');
+    assert.strictEqual(ec.detectShopType('某某旗舰店'), 'flagship');
   });
 
   test('detectShopType identifies channel for 专卖店', () => {
@@ -199,6 +199,31 @@ describe('extractor-common', () => {
   test('makeItem trims title whitespace', () => {
     const item = ec.makeItem({ provider: 'pdd', title: '  test  ', price: 1 });
     assert.strictEqual(item.title, 'test');
+  });
+
+  test('computeUnitPrice computes ¥/L for ml×count title', () => {
+    const r = ec.computeUnitPrice('百岁山 570ml×24瓶', 68);
+    assert.strictEqual(r.unitKind, 'L');
+    assert.ok(r.unitPrice > 0);
+    assert.ok(r.unitText.includes('/L'));
+  });
+
+  test('computeUnitPrice computes ¥/kg for weight title', () => {
+    const r = ec.computeUnitPrice('某品牌 500g', 19.9);
+    assert.strictEqual(r.unitKind, 'kg');
+    assert.ok(r.unitPrice > 0);
+  });
+
+  test('computeUnitPrice returns null for non-spec title', () => {
+    const r = ec.computeUnitPrice('手机壳苹果15', 29);
+    assert.strictEqual(r.unitPrice, null);
+    assert.strictEqual(r.unitKind, '');
+  });
+
+  test('makeItem auto-populates unitPrice from title', () => {
+    const item = ec.makeItem({ provider: 'jd', title: '百岁山 570ml×24瓶', price: 68 });
+    assert.strictEqual(item.unitKind, 'L');
+    assert.ok(item.unitPrice > 0);
   });
 });
 
@@ -234,8 +259,12 @@ describe('compare-bridge', () => {
     assert.strictEqual(cb.bucketOf('self_operated'), 'official');
   });
 
-  test('bucketOf puts flagship in channel', () => {
-    assert.strictEqual(cb.bucketOf('flagship'), 'channel');
+  test('bucketOf puts flagship in official (brand-run store = official tier)', () => {
+    assert.strictEqual(cb.bucketOf('flagship'), 'official');
+  });
+
+  test('bucketOf puts channel in channel', () => {
+    assert.strictEqual(cb.bucketOf('channel'), 'channel');
   });
 
   test('bucketOf puts normal in normal', () => {
@@ -274,6 +303,54 @@ describe('compare-bridge', () => {
     assert.strictEqual(result.api_count, 0);
     assert.ok(result.official_best);
   });
+
+  test('normalizeApiItem auto-populates unitPrice from goods_name', () => {
+    const norm = cb.normalizeApiItem({ platform: 'jd', goods_name: '百岁山 570ml 24瓶', coupon_price_yuan: 68 });
+    assert.strictEqual(norm.unitKind, 'L');
+    assert.ok(norm.unitPrice > 0, 'unitPrice should be positive');
+  });
+
+  test('rankByValueOrPrice sorts by unit price when all share same kind', () => {
+    const items = [
+      { price: 30, unitPrice: 5.0, unitKind: 'L' },
+      { price: 20, unitPrice: 3.5, unitKind: 'L' },
+      { price: 25, unitPrice: 4.0, unitKind: 'L' },
+    ];
+    const sorted = cb.rankByValueOrPrice(items);
+    assert.strictEqual(sorted[0].unitPrice, 3.5, 'cheapest per L first');
+  });
+
+  test('rankByValueOrPrice falls back to price when unit kinds differ', () => {
+    const items = [
+      { price: 30, unitPrice: 5.0, unitKind: 'L' },
+      { price: 20, unitPrice: 3.5, unitKind: 'kg' },
+      { price: 25, unitPrice: 4.0, unitKind: 'L' },
+    ];
+    const sorted = cb.rankByValueOrPrice(items);
+    assert.strictEqual(sorted[0].price, 20, 'cheapest sticker price first');
+  });
+
+  test('rankByValueOrPrice falls back to price when some items lack unit', () => {
+    const items = [
+      { price: 30, unitPrice: 5.0, unitKind: 'L' },
+      { price: 20, unitPrice: null, unitKind: '' },
+    ];
+    const sorted = cb.rankByValueOrPrice(items);
+    assert.strictEqual(sorted[0].price, 20);
+  });
+
+  test('mergeAndBucket puts 旗舰店 item in official bucket (flagship = official tier)', () => {
+    const { makeItem } = require('../sandbox/extractor-common');
+    const flagshipItem = makeItem({
+      provider: 'tb', title: '测试商品 500ml', price: 45,
+      shopName: '某某旗舰店', shopType: 'flagship',
+      itemUrl: '', imageUrl: '', confidence: 0.80,
+    });
+    const result = cb.mergeAndBucket([], [flagshipItem]);
+    assert.ok(result.official_best, 'flagship item should land in official bucket');
+    assert.strictEqual(result.official_best.price, 45);
+    assert.strictEqual(result.channel_best, null, 'channel should be empty');
+  });
 });
 
 // ---------- adapter fixture tests (mock page) ----------
@@ -289,7 +366,7 @@ describe('jd adapter with mock page', () => {
         return null;
       },
       waitForSelector: async () => {},
-      evaluate: async (fn) => fn(),
+      evaluate: async () => items,
     };
   }
 
@@ -323,7 +400,7 @@ describe('pdd adapter with mock page', () => {
       url: () => 'https://mobile.yangkeduo.com/search_result.html',
       $: async (sel) => hasCaptcha && sel.includes('captcha') ? {} : null,
       waitForSelector: async () => {},
-      evaluate: async (fn) => fn(),
+      evaluate: async () => [],
     };
   }
 
@@ -349,7 +426,7 @@ describe('taobao adapter with mock page', () => {
       url: () => 'https://login.taobao.com/member/login.jhtml',
       $: async () => null,
       waitForSelector: async () => {},
-      evaluate: async (fn) => fn(),
+      evaluate: async () => [],
     };
     const result = await tb.search(page, 'test');
     assert.strictEqual(result.status, 'need_user_login');
@@ -361,9 +438,49 @@ describe('taobao adapter with mock page', () => {
       url: () => 'https://s.taobao.com/search?q=test',
       $: async () => null,
       waitForSelector: async () => {},
-      evaluate: async (fn) => fn(),
+      evaluate: async () => [],
     };
     const result = await tb.search(page, 'test');
+    assert.strictEqual(result.status, 'failed');
+  });
+});
+
+describe('douyin adapter with mock page', () => {
+  const dy = require('../sandbox/adapters/douyin');
+
+  test('douyin search returns need_user_login when redirected to login', async () => {
+    const page = {
+      goto: async () => {},
+      url: () => 'https://www.douyin.com/login?redirect=/',
+      $: async () => null,
+      waitForSelector: async () => {},
+      evaluate: async () => [],
+    };
+    const result = await dy.search(page, 'test');
+    assert.strictEqual(result.status, 'need_user_login');
+  });
+
+  test('douyin search returns need_user_action when captcha detected', async () => {
+    const page = {
+      goto: async () => {},
+      url: () => 'https://haohuo.jinritemai.com/views/product/list',
+      $: async (sel) => sel.includes('captcha') ? {} : null,
+      waitForSelector: async () => {},
+      evaluate: async () => [],
+    };
+    const result = await dy.search(page, 'test');
+    assert.strictEqual(result.status, 'need_user_action');
+  });
+
+  test('douyin search returns failed with no DOM items', async () => {
+    const page = {
+      goto: async () => {},
+      url: () => 'https://haohuo.jinritemai.com/views/product/list',
+      $: async () => null,
+      waitForSelector: async () => {},
+      evaluate: async () => [],
+    };
+    const result = await dy.search(page, 'test');
     assert.strictEqual(result.status, 'failed');
   });
 });

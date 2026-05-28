@@ -2,6 +2,7 @@
 const sessionManager = require('./session-manager');
 const browserRunner = require('./browser-runner');
 const sanitizer = require('./sanitizer');
+const compareBridge = require('./compare-bridge');
 
 const ENABLED = String(process.env.SANDBOX_ENABLED || '').toLowerCase() === 'true';
 const ALLOWED_PLATFORMS = (process.env.SANDBOX_ALLOWED_PLATFORMS || 'jd,pdd,taobao,douyin').split(',').map(x => x.trim());
@@ -45,6 +46,76 @@ async function handleSandbox(req, res, url) {
 
   const pathname = url.pathname;
   const method = req.method;
+
+  // POST /api/sandbox/quick-search — stateless one-shot: create + search + close, no session lifecycle needed
+  if (pathname === '/api/sandbox/quick-search' && method === 'POST') {
+    const raw = await readBody(req);
+    let body = {}; try { body = raw ? JSON.parse(raw) : {}; } catch { body = {}; }
+    const keyword = String(body.keyword || '').trim();
+    if (!keyword) return sendJson(res, 400, { ok: false, error: 'missing_keyword' });
+    // Exclude douyin — always needs login, wastes ~350 MB
+    const platforms = (Array.isArray(body.platforms) ? body.platforms : ALLOWED_PLATFORMS)
+      .map(normPlatform).filter(p => ALLOWED_PLATFORMS.includes(p) && p !== 'douyin');
+    if (!platforms.length) return sendJson(res, 400, { ok: false, error: 'no_valid_platforms' });
+
+    let session = null;
+    const platformStatus = {};
+    const results = {};
+    // Detect client disconnection — if the browser aborts the fetch, stop wasting CPU/RAM.
+    let clientGone = false;
+    req.on('close', () => { clientGone = true; });
+
+    try {
+      session = sessionManager.createSession({ platforms, keyword });
+    } catch (e) {
+      if (e.code === 'MAX_CONCURRENT') return sendJson(res, 429, { ok: false, error: 'busy', message: '服务器正忙，请稍后再试' });
+      return sendJson(res, 500, { ok: false, error: 'session_create_failed', message: e.message });
+    }
+
+    // 25s per platform — caps any single runaway adapter so the 3-platform
+    // total fits within Render's ~90s effective connection window.
+    const PLATFORM_TIMEOUT_MS = 25000;
+    try {
+      for (const platform of platforms) {
+        if (clientGone) break; // client disconnected — no point continuing
+        platformStatus[platform] = { status: 'opening' };
+        try {
+          const adapter = getAdapter(platform);
+          if (!adapter) { platformStatus[platform] = { status: 'failed', reason: 'no_adapter' }; continue; }
+          const page = await browserRunner.getOrCreatePage(session, platform);
+          platformStatus[platform] = { status: 'searching' };
+          const timeout = new Promise((_, rej) =>
+            setTimeout(() => rej(Object.assign(new Error('platform_timeout'), { code: 'TIMEOUT' })), PLATFORM_TIMEOUT_MS)
+          );
+          const result = await Promise.race([adapter.search(page, keyword), timeout]);
+          platformStatus[platform] = { status: result.status, itemCount: (result.items || []).length, failed_reason: result.failed_reason };
+          if (result.status === 'success' && result.items) results[platform] = result.items;
+        } catch (e) {
+          platformStatus[platform] = { status: 'failed', reason: e.code || e.message };
+        } finally {
+          // Always release browser immediately — free ~200 MB per platform
+          await browserRunner.closePlatformBrowser(session, platform).catch(() => {});
+        }
+      }
+    } finally {
+      await sessionManager.closeSession(session, 'quick_search_done').catch(() => {});
+    }
+
+    const allItems = Object.values(results).flat();
+    const safeItems = allItems.map(sanitizer.safePublicResult);
+    let best = { official_best: null, channel_best: null, normal_best: null };
+    try {
+      const bucket = compareBridge.mergeAndBucket([], allItems);
+      const safe = x => (x ? sanitizer.safePublicResult(x) : null);
+      best = { official_best: safe(bucket.official_best), channel_best: safe(bucket.channel_best), normal_best: safe(bucket.normal_best) };
+    } catch (_) {}
+    return sendJson(res, 200, {
+      ok: true, keyword, total: allItems.length,
+      platforms: platformStatus,
+      results: safeItems,
+      best,
+    });
+  }
 
   // POST /api/sandbox/session — create session
   if (pathname === '/api/sandbox/session' && method === 'POST') {
@@ -110,6 +181,16 @@ async function handleSandbox(req, res, url) {
     if (!platform || !ALLOWED_PLATFORMS.includes(platform)) return sendJson(res, 400, { ok: false, error: 'invalid_platform' });
     const v = sanitizer.validateAction(body);
     if (!v.ok) return sendJson(res, 400, { ok: false, error: 'invalid_action', reason: v.reason });
+    // 铁律2: block typing on login/passport pages — server must never receive credentials
+    if (body.type === 'type') {
+      const ctx = session.browsers[platform];
+      if (ctx && ctx.page) {
+        const curUrl = ctx.page.url();
+        if (/login|passport|account|signin/i.test(curUrl)) {
+          return sendJson(res, 403, { ok: false, error: 'type_blocked_on_login_page', message: '铁律2：服务端沙盒不支持在登录页输入内容，请使用 App 授权验价' });
+        }
+      }
+    }
     try {
       await browserRunner.getOrCreatePage(session, platform);
       await browserRunner.performAction(session, platform, body);
@@ -130,18 +211,34 @@ async function handleSandbox(req, res, url) {
     const platforms = (Array.isArray(body.platforms) ? body.platforms : session.platforms).map(normPlatform).filter(p => ALLOWED_PLATFORMS.includes(p));
     session.status = 'searching';
 
-    await Promise.allSettled(platforms.map(async platform => {
+    // Sequential launch — Render free tier has 512 MB; parallel Chromium contexts OOM-crash the server
+    for (const platform of platforms) {
       session.platformStatus[platform] = { status: 'opening' };
       try {
         const adapter = getAdapter(platform);
-        if (!adapter) { session.platformStatus[platform] = { status: 'failed', reason: 'no_adapter' }; return; }
+        if (!adapter) { session.platformStatus[platform] = { status: 'failed', reason: 'no_adapter' }; continue; }
+
+        // Douyin shopping requires login/app even for search — skip browser launch entirely on server
+        if (platform === 'douyin') {
+          session.platformStatus[platform] = { status: 'need_user_action', failed_reason: 'douyin_requires_app_not_supported_server_side' };
+          continue;
+        }
+
         const page = await browserRunner.getOrCreatePage(session, platform);
         session.platformStatus[platform] = { status: 'searching' };
         const result = await adapter.search(page, keyword);
         session.platformStatus[platform] = { status: result.status, itemCount: (result.items || []).length, failed_reason: result.failed_reason };
         if (result.status === 'success' && result.items) session.results[platform] = result.items;
-      } catch (e) { session.platformStatus[platform] = { status: 'failed', reason: e.message }; }
-    }));
+
+        // Free RAM immediately when a platform needs login — server must never hold login state (铁律2)
+        if (['need_user_login', 'need_user_action'].includes(result.status)) {
+          await browserRunner.closePlatformBrowser(session, platform).catch(() => {});
+        }
+      } catch (e) {
+        session.platformStatus[platform] = { status: 'failed', reason: e.message };
+        await browserRunner.closePlatformBrowser(session, platform).catch(() => {});
+      }
+    }
 
     session.status = 'done';
     const allItems = Object.values(session.results).flat();

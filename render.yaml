@@ -1,12 +1,34 @@
 services:
   - type: web
     name: jiabibi-api
-    env: node
+    runtime: node
     plan: free
     buildCommand: npm install && npx playwright install --with-deps chromium
-    startCommand: npm start
+    startCommand: node server.js
     envVars:
       - key: NODE_ENV
         value: production
       - key: JD_PLAYWRIGHT_ENABLED
         value: "true"
+      - key: SANDBOX_ENABLED
+        value: "true"
+      - key: SANDBOX_MAX_CONCURRENT
+        value: "1"
+      - key: SANDBOX_SESSION_TTL_MS
+        value: "600000"
+      - key: SANDBOX_HEADLESS
+        value: "true"
+      - key: PORT
+        value: "3000"
+      # 京东联盟 — 在 Render dashboard 填值，不要写进代码 (sync: false)
+      # 不设置 JD_SEARCH_METHOD：默认走 goods.query，权限报错时代码自动降级到 jingfen.query
+      - key: JD_APP_KEY
+        sync: false
+      - key: JD_APP_SECRET
+        sync: false
+      - key: JD_ACCESS_TOKEN
+        sync: false
+      - key: JD_POSITION_ID
+        sync: false
+      - key: JD_SITE_ID
+        sync: false
