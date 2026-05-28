@@ -4,9 +4,8 @@
   "description": "Jiabibi API backend — PDD / JD / Taobao active; Douyin pending OAuth integration",
   "main": "server.js",
   "scripts": {
-    "prestart": "npx playwright install --with-deps chromium || true",
     "start": "node server.js",
-    "build": "npx playwright install --with-deps chromium",
+    "build": "npm install && (npx playwright install --with-deps chromium || npx playwright install chromium || true)",
     "test": "node --test tests/sandbox.test.js",
     "playwright:install": "npx playwright install --with-deps chromium"
   },
