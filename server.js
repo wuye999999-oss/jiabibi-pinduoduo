@@ -203,11 +203,83 @@ const JD_JINGFEN_METHOD = 'jd.union.open.goods.jingfen.query';
 const JD_PLAYWRIGHT_ENABLED = String(process.env.JD_PLAYWRIGHT_ENABLED || 'true').toLowerCase() !== 'false';
 function jdTimestamp() { const d = new Date(Date.now() + 8 * 3600000); const p = n => String(n).padStart(2, '0'); return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`; }
 function jdSign(params) { let s = JD_APP_SECRET; Object.keys(params).sort().forEach(k => { s += k + params[k]; }); return md5Upper(s + JD_APP_SECRET); }
-async function jdRequest(method, biz = {}) {
+
+// ---- JD OAuth2 token 自动刷新 ----
+// access_token 会过期（code 19）。配置 JD_REFRESH_TOKEN 后，服务器在 token 过期或临近过期时
+// 自动用 refresh_token 换新 token（保存在内存）。免费版无持久磁盘，刷新得到的新 token 仅存内存，
+// 进程重启后回退到 env 里的 JD_REFRESH_TOKEN —— 它有效期较长，足够长期运行。
+const JD_OAUTH_BASE = envFirst('JD_OAUTH_BASE') || 'https://open-oauth.jd.com/oauth2';
+const JD_REDIRECT_URI = envFirst('JD_REDIRECT_URI') || 'https://jiabibi-api.onrender.com/api/jd/oauth-callback';
+const jdToken = {
+  access_token: JD_ACCESS_TOKEN,
+  refresh_token: envFirst('JD_REFRESH_TOKEN'),
+  expires_at: 0,
+};
+function jdParseTokenResp(raw) {
+  // JD OAuth2 返回顶层字段；部分错误用 { error, error_description } 或 { code, msg }
+  if (raw && raw.access_token) return raw;
+  return null;
+}
+async function jdExchangeCode(code) {
+  const raw = await postForm(`${JD_OAUTH_BASE}/access_token`, {
+    app_key: JD_APP_KEY, app_secret: JD_APP_SECRET, grant_type: 'authorization_code', code, redirect_uri: JD_REDIRECT_URI,
+  });
+  const d = jdParseTokenResp(raw);
+  if (d) {
+    jdToken.access_token = d.access_token;
+    jdToken.refresh_token = d.refresh_token || jdToken.refresh_token;
+    jdToken.expires_at = Date.now() + (Number(d.expires_in) || 86400) * 1000;
+    console.log('[JD OAuth] Token obtained. Paste into Render env vars:');
+    console.log(`  JD_ACCESS_TOKEN=${d.access_token}`);
+    console.log(`  JD_REFRESH_TOKEN=${d.refresh_token}`);
+  }
+  return raw;
+}
+async function jdRefreshToken() {
+  if (!jdToken.refresh_token) return false;
+  try {
+    const raw = await postForm(`${JD_OAUTH_BASE}/refresh_token`, {
+      app_key: JD_APP_KEY, app_secret: JD_APP_SECRET, grant_type: 'refresh_token', refresh_token: jdToken.refresh_token,
+    });
+    const d = jdParseTokenResp(raw);
+    if (d) {
+      jdToken.access_token = d.access_token;
+      jdToken.refresh_token = d.refresh_token || jdToken.refresh_token;
+      jdToken.expires_at = Date.now() + (Number(d.expires_in) || 86400) * 1000;
+      console.log('[JD OAuth] Token refreshed:', d.access_token.slice(0, 8) + '...');
+      return true;
+    }
+    console.error('[JD OAuth] Refresh response had no access_token:', JSON.stringify(raw).slice(0, 200));
+  } catch (e) { console.error('[JD OAuth] Refresh failed:', e.message); }
+  return false;
+}
+async function jdGetAccessToken() {
+  // 有 refresh_token 且 token 过期/临近过期 → 主动刷新
+  if (jdToken.refresh_token && (!jdToken.expires_at || Date.now() > jdToken.expires_at - 3600000)) {
+    await jdRefreshToken();
+  }
+  return jdToken.access_token;
+}
+function isJdTokenError(raw) {
+  const er = raw && raw.error_response;
+  if (!er) return false;
+  const code = String(er.code || '');
+  const msg = String(er.zh_desc || er.en_desc || '');
+  return code === '19' || /access_token/i.test(msg) || msg.includes('授权') || msg.includes('token');
+}
+
+async function jdRequest(method, biz = {}, _retried = false) {
   if (!JD_APP_KEY || !JD_APP_SECRET) return { error: 'missing_jd_env' };
-  const params = cleanParams({ method, app_key: JD_APP_KEY, access_token: JD_ACCESS_TOKEN, timestamp: jdTimestamp(), format: 'json', v: '1.0', sign_method: 'md5', '360buy_param_json': JSON.stringify(biz) });
+  const accessToken = await jdGetAccessToken();
+  const params = cleanParams({ method, app_key: JD_APP_KEY, access_token: accessToken, timestamp: jdTimestamp(), format: 'json', v: '1.0', sign_method: 'md5', '360buy_param_json': JSON.stringify(biz) });
   params.sign = jdSign(params);
-  return postForm(JD_API_URL, params);
+  const raw = await postForm(JD_API_URL, params);
+  // token 失效 → 用 refresh_token 换新 token，重试一次
+  if (!_retried && isJdTokenError(raw) && jdToken.refresh_token) {
+    console.log('[JD] access_token error, refreshing and retrying once');
+    if (await jdRefreshToken()) return jdRequest(method, biz, true);
+  }
+  return raw;
 }
 function normalizeJd(item, source = 'jd.union') {
   const skuId = String(item.skuId || item.sku_id || item.itemId || '');
@@ -268,10 +340,13 @@ async function searchJd(q, pageSize = 20) {
   const raw = await jdRequest(JD_SEARCH_METHOD, { goodsReq });
   const first = parseJdResponse(raw);
 
-  // 网络/HTTP 故障才降级到 Playwright（API 服务本身不可达）
+  // 网络/HTTP 故障或 token 失效（已自动重试过）→ 降级到 Playwright
   if (first.httpError) {
+    const tokenErr = isJdTokenError(raw);
     return jdFallbackOrReport(q, pageSize,
-      { ok: false, error: first.httpError, raw });
+      { ok: false, error: first.httpError,
+        hint: tokenErr ? '配置 JD_REFRESH_TOKEN 可自动续期；或访问 /api/jd/oauth-start 重新授权获取' : undefined,
+        raw });
   }
 
   // Auto-fallback: goods.query permission error → jingfen.query
@@ -541,7 +616,7 @@ async function handle(req, res) {
       return sandboxMod.handleSandbox(req, res, url);
     }
     if (url.pathname === '/' || url.pathname === '/health') {
-      const h = { ok: true, name: '价比比 API', runtime: 'server', version: '9.4', pdd_configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID), jd_configured: !!(JD_APP_KEY && JD_APP_SECRET), jd_auto_fallback: 'enabled', tb_enabled: TB_ENABLED, tb_configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID), douyin_enabled: DOUYIN_ENABLED, douyin_configured: DOUYIN_CONFIGURED, douyin_has_token: dyHasToken(), provider_status: '/api/providers/status', health_deep: '/api/health/deep', douyin_oauth: '/api/douyin/oauth-start', compare_api: '/api/compare?q=小米充电宝' };
+      const h = { ok: true, name: '价比比 API', runtime: 'server', version: '9.4', pdd_configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID), jd_configured: !!(JD_APP_KEY && JD_APP_SECRET), jd_auto_fallback: 'enabled', jd_auto_refresh: !!jdToken.refresh_token, jd_oauth: '/api/jd/oauth-start', tb_enabled: TB_ENABLED, tb_configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID), douyin_enabled: DOUYIN_ENABLED, douyin_configured: DOUYIN_CONFIGURED, douyin_has_token: dyHasToken(), provider_status: '/api/providers/status', health_deep: '/api/health/deep', douyin_oauth: '/api/douyin/oauth-start', compare_api: '/api/compare?q=小米充电宝' };
       if (sandboxMod) Object.assign(h, sandboxMod.sandboxHealthInfo());
       return sendJson(res, 200, h);
     }
@@ -580,6 +655,31 @@ if (url.pathname === '/api/health/deep') {
       return sendJson(res, ok ? 200 : 400, { ok, platform: 'douyin', message: ok ? 'OAuth 成功！请将 Render 日志中的 token 复制到环境变量。' : 'OAuth 失败', open_id: ok ? raw.data.open_id : '', expires_in: ok ? raw.data.expires_in : 0, raw: ok ? undefined : raw });
     }
     if (url.pathname === '/api/douyin/status') return sendJson(res, 200, { ok: true, ...douyinStatusInfo() });
+
+    if (url.pathname === '/api/jd/oauth-start') {
+      if (!JD_APP_KEY || !JD_APP_SECRET) return sendJson(res, 400, { ok: false, error: 'missing_jd_env', hint: '先在 Render 填 JD_APP_KEY / JD_APP_SECRET' });
+      const authUrl = `${JD_OAUTH_BASE}/to_login?app_key=${encodeURIComponent(JD_APP_KEY)}&response_type=code&redirect_uri=${encodeURIComponent(JD_REDIRECT_URI)}&state=jiabibi&scope=snsapi_base`;
+      const acceptsHtml = (req.headers.accept || '').includes('text/html');
+      if (acceptsHtml) return sendRedirect(res, authUrl);
+      return sendJson(res, 200, { ok: true, message: '在浏览器打开授权链接，登录联盟账号授权', auth_url: authUrl, redirect_uri: JD_REDIRECT_URI, note: '需先在 union.jd.com 应用设置里把上面的 redirect_uri 加为授权回调地址' });
+    }
+    if (url.pathname === '/api/jd/oauth-callback') {
+      const code = url.searchParams.get('code') || '';
+      if (!code) return sendJson(res, 400, { ok: false, error: 'missing_code' });
+      const raw = await jdExchangeCode(code);
+      const ok = !!(raw && raw.access_token);
+      return sendJson(res, ok ? 200 : 400, { ok, platform: 'jd',
+        message: ok ? 'OAuth 成功！把下面的 JD_REFRESH_TOKEN 复制到 Render 环境变量（access_token 服务器会自动刷新，无需手填）。' : 'OAuth 失败',
+        JD_ACCESS_TOKEN: ok ? raw.access_token : undefined,
+        JD_REFRESH_TOKEN: ok ? raw.refresh_token : undefined,
+        expires_in: ok ? raw.expires_in : undefined,
+        raw: ok ? undefined : raw });
+    }
+    if (url.pathname === '/api/jd/token-status') {
+      return sendJson(res, 200, { ok: true, has_access_token: !!jdToken.access_token, has_refresh_token: !!jdToken.refresh_token,
+        token_expires_at: jdToken.expires_at ? new Date(jdToken.expires_at).toISOString() : 'unknown',
+        auto_refresh: !!jdToken.refresh_token, oauth_start: '/api/jd/oauth-start' });
+    }
 
     if (url.pathname === '/api/diag') {
       const q = (url.searchParams.get('q') || url.searchParams.get('keyword') || '').trim();
