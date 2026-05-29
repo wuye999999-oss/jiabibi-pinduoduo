@@ -239,6 +239,19 @@ function isJdPermissionError(parsed) {
     msg.includes('权限') || msg.includes('permission') || msg.includes('unauthorized') || msg.includes('not auth');
 }
 
+// 尝试 Playwright 降级；成功则返回抓取结果，失败则把原始 JD API 错误一并带回，
+// 避免「chromium 没装」这种无意义报错盖掉真正的诊断信息（jd_code/hint）。
+async function jdFallbackOrReport(q, pageSize, jdDiag) {
+  if (JD_PLAYWRIGHT_ENABLED && jdPlaywrightMod) {
+    console.log('[JD] API failed, trying Playwright fallback');
+    const pw = await jdPlaywrightMod.searchJdPlaywright(q, pageSize);
+    if (pw.ok && (pw.goods_list || []).length) return pw;
+    return { platform: 'jd', keyword: q, total_count: 0, goods_list: [], ...jdDiag,
+      fallback: { source: 'playwright', error: pw.error || 'playwright_no_results' } };
+  }
+  return { platform: 'jd', keyword: q, total_count: 0, goods_list: [], ...jdDiag };
+}
+
 async function searchJd(q, pageSize = 20) {
   // 没凭证时直接报 not_configured，不触发 Playwright 降级（chromium 报错无意义）
   if (!JD_APP_KEY || !JD_APP_SECRET) {
@@ -257,11 +270,8 @@ async function searchJd(q, pageSize = 20) {
 
   // 网络/HTTP 故障才降级到 Playwright（API 服务本身不可达）
   if (first.httpError) {
-    if (JD_PLAYWRIGHT_ENABLED && jdPlaywrightMod) {
-      console.log('[JD] Union API HTTP error, trying Playwright fallback');
-      return jdPlaywrightMod.searchJdPlaywright(q, pageSize);
-    }
-    return { ok: false, platform: 'jd', keyword: q, total_count: 0, goods_list: [], error: first.httpError, raw };
+    return jdFallbackOrReport(q, pageSize,
+      { ok: false, error: first.httpError, raw });
   }
 
   // Auto-fallback: goods.query permission error → jingfen.query
@@ -283,15 +293,14 @@ async function searchJd(q, pageSize = 20) {
   }
 
   if (parsed.code !== undefined && Number(parsed.code) !== 0) {
-    // 权限错误（接口未开通）→ Playwright 降级；其他错误（签名/账号）→ 直接报错
-    if (isJdPermissionError(parsed) && JD_PLAYWRIGHT_ENABLED && jdPlaywrightMod) {
-      console.log(`[JD] permission error after fallback (code=${parsed.code}), trying Playwright`);
-      return jdPlaywrightMod.searchJdPlaywright(q, pageSize);
-    }
-    return { ok: false, platform: 'jd', keyword: q, total_count: 0, goods_list: [],
-      error: 'jd_api_error', jd_code: parsed.code, jd_message: parsed.message || '',
+    const jdDiag = { ok: false, error: 'jd_api_error', jd_code: parsed.code, jd_message: parsed.message || '',
       hint: isJdPermissionError(parsed) ? '可在 union.jd.com 申请接口权限，或手动设置 JD_SEARCH_METHOD=jd.union.open.goods.jingfen.query' : undefined,
       raw: finalRaw };
+    // 权限错误（接口未开通）→ 尝试 Playwright 降级；其他错误（签名/账号）→ 直接报错
+    if (isJdPermissionError(parsed)) {
+      return jdFallbackOrReport(q, pageSize, jdDiag);
+    }
+    return { platform: 'jd', keyword: q, total_count: 0, goods_list: [], ...jdDiag };
   }
 
   const dataArr = Array.isArray(parsed.data) ? parsed.data
