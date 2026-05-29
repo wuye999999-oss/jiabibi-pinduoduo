@@ -240,6 +240,13 @@ function isJdPermissionError(parsed) {
 }
 
 async function searchJd(q, pageSize = 20) {
+  // 没凭证时直接报 not_configured，不触发 Playwright 降级（chromium 报错无意义）
+  if (!JD_APP_KEY || !JD_APP_SECRET) {
+    return { ok: false, platform: 'jd', status: 'not_configured', keyword: q,
+      total_count: 0, goods_list: [],
+      error: 'missing_jd_env', hint: '请在 Render dashboard 的 Environment 里填写 JD_APP_KEY / JD_APP_SECRET' };
+  }
+
   const posId = Number(JD_POSITION_ID) || undefined;
   const goodsReq = { keyword: q, pageIndex: 1, pageSize: Math.min(Math.max(1, Number(pageSize) || 20), 30) };
   if (posId) goodsReq.positionId = posId;
@@ -248,6 +255,7 @@ async function searchJd(q, pageSize = 20) {
   const raw = await jdRequest(JD_SEARCH_METHOD, { goodsReq });
   const first = parseJdResponse(raw);
 
+  // 网络/HTTP 故障才降级到 Playwright（API 服务本身不可达）
   if (first.httpError) {
     if (JD_PLAYWRIGHT_ENABLED && jdPlaywrightMod) {
       console.log('[JD] Union API HTTP error, trying Playwright fallback');
@@ -275,8 +283,9 @@ async function searchJd(q, pageSize = 20) {
   }
 
   if (parsed.code !== undefined && Number(parsed.code) !== 0) {
-    if (JD_PLAYWRIGHT_ENABLED && jdPlaywrightMod) {
-      console.log(`[JD] Union API error (code=${parsed.code}), trying Playwright fallback`);
+    // 权限错误（接口未开通）→ Playwright 降级；其他错误（签名/账号）→ 直接报错
+    if (isJdPermissionError(parsed) && JD_PLAYWRIGHT_ENABLED && jdPlaywrightMod) {
+      console.log(`[JD] permission error after fallback (code=${parsed.code}), trying Playwright`);
       return jdPlaywrightMod.searchJdPlaywright(q, pageSize);
     }
     return { ok: false, platform: 'jd', keyword: q, total_count: 0, goods_list: [],
