@@ -5,6 +5,8 @@
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
 const sandboxMod = (() => { try { return require('./sandbox/routes'); } catch (_) { return null; } })();
 const jdPlaywrightMod = (() => { try { return require('./sandbox/jd-playwright-search'); } catch (_) { return null; } })();
@@ -615,10 +617,32 @@ async function handle(req, res) {
       if (!sandboxMod) return sendJson(res, 501, { ok: false, error: 'sandbox_module_not_loaded' });
       return sandboxMod.handleSandbox(req, res, url);
     }
-    if (url.pathname === '/' || url.pathname === '/health') {
+    if (url.pathname === '/health') {
       const h = { ok: true, name: '价比比 API', runtime: 'server', version: '9.4', pdd_configured: !!(PDD_CLIENT_ID && PDD_CLIENT_SECRET && PDD_PID), jd_configured: !!(JD_APP_KEY && JD_APP_SECRET), jd_auto_fallback: 'enabled', jd_auto_refresh: !!jdToken.refresh_token, jd_oauth: '/api/jd/oauth-start', tb_enabled: TB_ENABLED, tb_configured: !!(TB_APP_KEY && TB_APP_SECRET && TB_ADZONE_ID), douyin_enabled: DOUYIN_ENABLED, douyin_configured: DOUYIN_CONFIGURED, douyin_has_token: dyHasToken(), provider_status: '/api/providers/status', health_deep: '/api/health/deep', douyin_oauth: '/api/douyin/oauth-start', compare_api: '/api/compare?q=小米充电宝' };
       if (sandboxMod) Object.assign(h, sandboxMod.sandboxHealthInfo());
       return sendJson(res, 200, h);
+    }
+    if (url.pathname === '/' || url.pathname === '/index.html') {
+      const htmlPath = path.join(__dirname, 'web', 'index.html');
+      try {
+        const html = fs.readFileSync(htmlPath, 'utf8');
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        return res.end(html);
+      } catch (_) {
+        res.writeHead(404); return res.end('not found');
+      }
+    }
+    if (url.pathname === '/sandbox-ui.js' || url.pathname === '/stable.html') {
+      const filePath = path.join(__dirname, 'web', url.pathname.slice(1));
+      try {
+        const ext = path.extname(filePath);
+        const mime = ext === '.js' ? 'application/javascript' : 'text/html';
+        const content = fs.readFileSync(filePath, 'utf8');
+        res.writeHead(200, { 'Content-Type': mime + '; charset=utf-8' });
+        return res.end(content);
+      } catch (_) {
+        res.writeHead(404); return res.end('not found');
+      }
     }
     if (url.pathname === '/api/providers/status')
       return sendJson(res, 200, { ok: true, runtime: 'server', version: '9.4', providers: providerStatus() });
